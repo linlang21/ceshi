@@ -1,0 +1,20 @@
+{
+  "onboardingComplete": false,
+  "lastHeartbeatDate": null,
+  "heartbeatEnabled": false,
+  "schemaVersion": 5,
+  "buddy": {
+    "species": "robot",
+    "rarity": "common",
+    "stats": {
+      "humor": 81,
+      "patience": 3,
+      "precision": 40,
+      "insight": 16,
+      "creativity": 32
+    },
+    "emoji": "🤖",
+    "peakStat": "humor",
+    "hatchedAt": "2026-06-16T08:48:39.331Z"
+  }
+}

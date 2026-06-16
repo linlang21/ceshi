@@ -1,0 +1,186 @@
+文件: e:\ceshi\1\VVV.exe
+  大小: 13.48 MB (14131712 bytes)
+  架构: x86
+  节区(3):
+    UPX0         VSize=1092.0KB  RawSize=0.0KB
+    UPX1         VSize=13752.0KB  RawSize=13749.5KB
+    .rsrc        VSize=52.0KB  RawSize=50.0KB
+  加壳特征: UPX
+  整体熵: 8.000 (高度加密/压缩)
+  易语言(EPL): 未检测到
+  功能关键词命中:
+    无敌                     ASCII=200  UTF16=0
+    倍攻                     ASCII=200  UTF16=0
+    传送                     ASCII=200  UTF16=0
+    坐标                     ASCII=200  UTF16=0
+    加速                     ASCII=200  UTF16=0
+    无限                     ASCII=200  UTF16=0
+    一击                     ASCII=200  UTF16=0
+    必杀                     ASCII=200  UTF16=0
+    定怪                     ASCII=200  UTF16=0
+    去草                     ASCII=200  UTF16=0
+    采集                     ASCII=200  UTF16=0
+    拾取                     ASCII=200  UTF16=0
+    隐身                     ASCII=200  UTF16=0
+    体力                     ASCII=200  UTF16=0
+    注入                     ASCII=200  UTF16=0
+    界碑                     ASCII=200  UTF16=0
+    望月                     ASCII=200  UTF16=0
+    罪恶                     ASCII=200  UTF16=0
+    换肤                     ASCII=200  UTF16=0
+    变身                     ASCII=200  UTF16=0
+    VirtualAlloc           ASCII=1  UTF16=0
+  关键词总命中: 4001
+======================================================================
+文件: e:\ceshi\2\V2.3.exe
+  大小: 15.54 MB (16289792 bytes)
+  架构: x86
+  节区(4):
+    .text        VSize=493.0KB  RawSize=496.0KB
+    .rdata       VSize=15156.9KB  RawSize=15160.0KB
+    .data        VSize=158.6KB  RawSize=72.0KB
+    .rsrc        VSize=174.3KB  RawSize=176.0KB
+  加壳特征: 疑似VMP(.rdata=14.8MB异常大)
+  整体熵: 7.930 (高度加密/压缩)
+  易语言(EPL): 未检测到
+  功能关键词命中:
+    无敌                     ASCII=200  UTF16=0
+    倍攻                     ASCII=200  UTF16=0
+    传送                     ASCII=200  UTF16=0
+    坐标                     ASCII=200  UTF16=0
+    加速                     ASCII=200  UTF16=0
+    无限                     ASCII=200  UTF16=0
+    一击                     ASCII=200  UTF16=0
+    必杀                     ASCII=200  UTF16=0
+    定怪                     ASCII=200  UTF16=0
+    去草                     ASCII=200  UTF16=0
+    采集                     ASCII=200  UTF16=0
+    拾取                     ASCII=200  UTF16=0
+    隐身                     ASCII=200  UTF16=0
+    体力                     ASCII=200  UTF16=0
+    buff                   ASCII=2  UTF16=0
+    注入                     ASCII=200  UTF16=0
+    界碑                     ASCII=200  UTF16=0
+    望月                     ASCII=200  UTF16=0
+    罪恶                     ASCII=200  UTF16=0
+    换肤                     ASCII=200  UTF16=0
+    变身                     ASCII=200  UTF16=0
+    OpenProcess            ASCII=4  UTF16=0
+    VirtualAlloc           ASCII=1  UTF16=0
+    Lua                    ASCII=1  UTF16=0
+  关键词总命中: 4008
+======================================================================
+文件: e:\ceshi\3\燕云学习软件 V2.4.exe
+  大小: 33.52 MB (35147776 bytes)
+  架构: x86
+  节区(4):
+    .text        VSize=494.0KB  RawSize=496.0KB
+    .rdata       VSize=33572.9KB  RawSize=33576.0KB
+    .data        VSize=158.6KB  RawSize=72.0KB
+    .rsrc        VSize=174.3KB  RawSize=176.0KB
+  加壳特征: 疑似VMP(.rdata=32.8MB异常大)
+  整体熵: 7.924 (高度加密/压缩)
+  易语言(EPL): 未检测到
+  功能关键词命中:
+    无敌                     ASCII=200  UTF16=0
+    倍攻                     ASCII=200  UTF16=0
+    传送                     ASCII=200  UTF16=0
+    坐标                     ASCII=200  UTF16=0
+    加速                     ASCII=200  UTF16=0
+    无限                     ASCII=200  UTF16=0
+    一击                     ASCII=200  UTF16=0
+    必杀                     ASCII=200  UTF16=0
+    定怪                     ASCII=200  UTF16=0
+    去草                     ASCII=200  UTF16=0
+    采集                     ASCII=200  UTF16=0
+    拾取                     ASCII=200  UTF16=0
+    隐身                     ASCII=200  UTF16=0
+    体力                     ASCII=200  UTF16=0
+    buff                   ASCII=2  UTF16=0
+    注入                     ASCII=200  UTF16=0
+    界碑                     ASCII=200  UTF16=0
+    望月                     ASCII=200  UTF16=0
+    罪恶                     ASCII=200  UTF16=0
+    换肤                     ASCII=200  UTF16=0
+    变身                     ASCII=200  UTF16=0
+    OpenProcess            ASCII=4  UTF16=0
+    VirtualAlloc           ASCII=1  UTF16=0
+    Lua                    ASCII=1  UTF16=0
+  关键词总命中: 4008
+======================================================================
+文件: e:\ceshi\4\燕云十六科技学习_0.3.exe
+  大小: 35.09 MB (36794368 bytes)
+  架构: x86
+  节区(4):
+    .text        VSize=494.0KB  RawSize=496.0KB
+    .rdata       VSize=35180.9KB  RawSize=35184.0KB
+    .data        VSize=158.6KB  RawSize=72.0KB
+    .rsrc        VSize=172.9KB  RawSize=176.0KB
+  加壳特征: 疑似VMP(.rdata=34.4MB异常大)
+  整体熵: 7.933 (高度加密/压缩)
+  易语言(EPL): 未检测到
+  功能关键词命中:
+    无敌                     ASCII=200  UTF16=0
+    倍攻                     ASCII=200  UTF16=0
+    传送                     ASCII=200  UTF16=0
+    坐标                     ASCII=200  UTF16=0
+    加速                     ASCII=200  UTF16=0
+    无限                     ASCII=200  UTF16=0
+    一击                     ASCII=200  UTF16=0
+    必杀                     ASCII=200  UTF16=0
+    定怪                     ASCII=200  UTF16=0
+    去草                     ASCII=200  UTF16=0
+    采集                     ASCII=200  UTF16=0
+    拾取                     ASCII=200  UTF16=0
+    隐身                     ASCII=200  UTF16=0
+    体力                     ASCII=200  UTF16=0
+    buff                   ASCII=2  UTF16=0
+    注入                     ASCII=200  UTF16=0
+    界碑                     ASCII=200  UTF16=0
+    望月                     ASCII=200  UTF16=0
+    罪恶                     ASCII=200  UTF16=0
+    换肤                     ASCII=200  UTF16=0
+    变身                     ASCII=200  UTF16=0
+    OpenProcess            ASCII=4  UTF16=0
+    VirtualAlloc           ASCII=1  UTF16=0
+    lua                    ASCII=1  UTF16=0
+    Lua                    ASCII=4  UTF16=0
+  关键词总命中: 4012
+======================================================================
+文件: e:\ceshi\5\进游戏内用界碑传送一下再启动我.exe
+  大小: 21.55 MB (22597632 bytes)
+  架构: x86
+  节区(4):
+    .text        VSize=512.1KB  RawSize=516.0KB
+    .rdata       VSize=21298.3KB  RawSize=21300.0KB
+    .data        VSize=158.6KB  RawSize=72.0KB
+    .rsrc        VSize=172.9KB  RawSize=176.0KB
+  加壳特征: 疑似VMP(.rdata=20.8MB异常大)
+  整体熵: 7.934 (高度加密/压缩)
+  易语言(EPL): 未检测到
+  功能关键词命中:
+    无敌                     ASCII=200  UTF16=0
+    倍攻                     ASCII=200  UTF16=0
+    传送                     ASCII=200  UTF16=0
+    坐标                     ASCII=200  UTF16=0
+    加速                     ASCII=200  UTF16=0
+    无限                     ASCII=200  UTF16=0
+    一击                     ASCII=200  UTF16=0
+    必杀                     ASCII=200  UTF16=0
+    定怪                     ASCII=200  UTF16=0
+    去草                     ASCII=200  UTF16=0
+    采集                     ASCII=200  UTF16=0
+    拾取                     ASCII=200  UTF16=0
+    隐身                     ASCII=200  UTF16=0
+    体力                     ASCII=200  UTF16=0
+    buff                   ASCII=2  UTF16=0
+    注入                     ASCII=200  UTF16=0
+    界碑                     ASCII=200  UTF16=0
+    望月                     ASCII=200  UTF16=0
+    罪恶                     ASCII=200  UTF16=0
+    换肤                     ASCII=200  UTF16=0
+    变身                     ASCII=200  UTF16=0
+    OpenProcess            ASCII=4  UTF16=0
+    VirtualAlloc           ASCII=1  UTF16=0
+  关键词总命中: 4007
+======================================================================

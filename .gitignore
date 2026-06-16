@@ -1,0 +1,48 @@
+# Build outputs
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.bin
+
+# IDE and editor files
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.sln.docstates
+
+# System files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
+*.cache
+
+# Package manager
+packages/
+node_modules/
+
+# Personal/sensitive files
+*.key
+卡密.txt
+
+# Analysis and dump files
+dump/
+analysis/
+
+# Media files (optional - uncomment if needed)
+# *.mp4
+# *.avi
+# *.png
+# *.jpg
+
+# Archive files (optional - uncomment if needed)
+# *.rar
+# *.zip
+# *.7z
