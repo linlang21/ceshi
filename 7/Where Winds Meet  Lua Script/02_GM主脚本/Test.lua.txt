@@ -1,0 +1,1706 @@
+-- SCRIPT START TEST
+print("=== SCRIPT IS RUNNING ===")
+-- =================================================================================
+-- SECTION 1: DEBUG & SETUP
+-- =================================================================================
+local DEBUG_FILE_ENABLED = true
+local DEBUG_FILE_PATH = "C:\\temp\\Where Winds Meet\\Scripts\\script_debug.txt"
+local function write_debug(message)
+    if DEBUG_FILE_ENABLED then
+        pcall(function()
+            local file = io.open(DEBUG_FILE_PATH, "a")
+            if file then
+                file:write(os.date("%H:%M:%S") .. " " .. message .. "\n")
+                file:close()
+            end
+        end)
+    end
+    print(message)
+end
+-- Initialize Debug File
+if DEBUG_FILE_ENABLED then
+    pcall(function()
+        local file = io.open(DEBUG_FILE_PATH, "w")
+        if file then
+            file:write("=== SCRIPT DEBUG LOG ===\n")
+            file:close()
+        end
+    end)
+end
+-- Check Environment
+if not G or not G.main_player or not cc or not cc.Director then
+    write_debug("ERROR: Game environment not ready (G or cc missing)")
+    return
+end
+local mp = G.main_player
+local director = cc.Director:getInstance()
+local scene = director:getRunningScene()
+local size = director:getVisibleSize() -- Needed for dragging boundaries
+-- Remove old menu if exists
+if _G.GM_MENU then
+    _G.GM_MENU:removeFromParent()
+    _G.GM_MENU = nil
+end
+-- Remove old buff menu if exists
+if _G.BUFF_MENU then
+    _G.BUFF_MENU:removeFromParent()
+    _G.BUFF_MENU = nil
+end
+-- =================================================================================
+-- SECTION 2: GLOBAL LOGIC FUNCTIONS (THE BRAIN)
+-- =================================================================================
+-- 1. VISUAL SYNC (This connects Hotkeys to the Menu UI)
+_G.ForceUpdateVisuals = function() end -- Forward declaration
+-- 2. RECOVER (REPLACED WITH USER-SUPPLIED IMPLEMENTATION)
+_G.RunRecover = function()
+    local function main()
+        local mp_local = G and G.main_player
+        if not mp_local then
+            print("[Recover] ERROR: Main player not found")
+            return
+        end
+        local mod = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+        local action = nil
+        pcall(function() action = portable.import(mod) end)
+        if not action then
+            print("[Recover] Module "..mod.." not found, using buff fallback")
+            -- Fallback: apply recovery buff directly
+            pcall(mp_local.add_buff, mp_local, 70141) -- recover buff
+            pcall(mp_local.add_buff, mp_local, 70063) -- optional: stamina/full recovery buff if needed
+        else
+            -- Preferred: use combat action API
+            pcall(function() action.recover_hp(1) end) -- recover HP
+            pcall(function() action.fullfill_all_combat_res(1) end) -- fill stamina
+            print("[Recover] Recovery applied via combat action")
+        end
+    end
+    pcall(main)
+end
+-- 3. KILL NPC
+_G.RunKillNPC = function()
+    write_debug("[KillNPC] Triggered")
+    local count = 0
+    local combat_action = nil
+    pcall(function() combat_action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action') end)
+    if combat_action then
+        pcall(function() combat_action.set_npc_mortal(true) end)
+        pcall(function() combat_action.kill_all_npc() end)
+    end
+    -- Boss Damage Logic
+    pcall(function()
+        local target_id = mp:get_lock_target_id()
+        if target_id then
+            local target = G.space:get_entity(target_id)
+            if target then
+                pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+                pcall(function() target:attr_set_HP(0, mp.entity_id, true, false) end)
+                pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+                count = count + 1
+            end
+        end
+    end)
+    -- Area Cleanup Loop
+    pcall(function()
+        local all = MEntityManager:GetAOIEntities()
+        for i = 1, #all do
+            local ent = all[i]
+            local ok, name = pcall(function() return ent:GetName() end)
+            if ok and name and (name:find('AiAvatar') or name:find('Npc') or name:find('Boss')) then
+                local ok2, eid = pcall(function() return ent.entity_id end)
+                if ok2 and eid then
+                    local target = G.space:get_entity(eid)
+                    if target and target ~= mp then
+                        pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+                        pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end)
+end
+-- 4. AUTO LOOT
+-- === Robust AutoLoot with interactable filter ===
+_G.RunAutoLoot = function()
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[AutoLoot] ERROR: main player not found")
+        return
+    end
+    local interact_misc = nil
+    pcall(function() interact_misc = portable.import('hexm.common.misc.interact_misc') end)
+    -- 1) Collections
+    pcall(function() mp_local:ride_skill_collect_nearby_collections(5000) end)
+    -- 2) Rewards
+    pcall(function()
+        local rewards = mp_local:ride_skill_find_nearest_kill_reward(5000)
+        if rewards then
+            pcall(function() mp_local:ride_skill_get_kill_reward(rewards) end)
+        end
+    end)
+    -- 3) Drops
+    pcall(function()
+        local drops = DropManager.get_nearby_drop_entities(5000)
+        if drops then
+            for _, eid in ipairs(drops) do
+                pcall(function() mp_local:pick_drop_item(eid) end)
+                pcall(function() mp_local:pick_reward_item(eid) end)
+            end
+        end
+    end)
+    -- 4) Interact entities (complex interactions) with filtering
+    local ok_pos, playerPos = pcall(function() return mp_local:get_position() end)
+    if not ok_pos or not playerPos then playerPos = {x=0,y=0,z=0} end
+    local entities = MEntityManager:GetAOIEntities() or {}
+    local targets = {}
+    -- Name patterns to ignore (case-insensitive)
+    local IGNORE_NAME_PATTERNS = {
+        "lockpick", "lock pick", "elevator", "elev", "mini", "minigame", "mini-game",
+        "puzzle", "chess", "rhythm", "pitch", "pitch pot", "slot", "gacha"
+    }
+    -- Status/config IDs to ignore (populate with IDs you want to blacklist)
+    local IGNORE_STATUS_IDS = {
+        -- [12345] = true, -- example: add known status_no values to skip
+    }
+    local IGNORE_CONFIG_IDS = {
+        -- [54321] = true, -- example: add known config_no values to skip
+    }
+    local function name_matches_ignore(name)
+        if not name then return false end
+        local lname = string.lower(name)
+        for _, pat in ipairs(IGNORE_NAME_PATTERNS) do
+            if lname:find(pat, 1, true) then
+                return true
+            end
+        end
+        return false
+    end
+    for i = 1, #entities do
+        local ent = entities[i]
+        local ok, name = pcall(function() return ent:GetName() end)
+        if ok and name and name:find('InteractComEntity') then
+            -- Quick name-based filter
+            if name_matches_ignore(name) then
+                write_debug("[AutoLoot] Skipping by name: " .. tostring(name))
+            else
+                local ok2, eno = pcall(function() return ent:GetEntityNo() end)
+                local ok3, eid = pcall(function() return ent.entity_id end)
+                if ok2 and ok3 and eid then
+                    local luaEnt = G.space and G.space:get_entity(eid)
+                    if luaEnt then
+                        local ok4, comp = pcall(function() return luaEnt:get_interact_comp(eid) end)
+                        if ok4 and comp and comp.position then
+                            -- Component-based filter: check status/config IDs
+                            local skip = false
+                            -- check status_no (could be single or table)
+                            if comp.status_no then
+                                if type(comp.status_no) == "table" then
+                                    for _, sid in ipairs(comp.status_no) do
+                                        if IGNORE_STATUS_IDS[sid] then skip = true; break end
+                                    end
+                                else
+                                    if IGNORE_STATUS_IDS[comp.status_no] then skip = true end
+                                end
+                            end
+                            -- check config_no (could be single or table)
+                            if not skip and comp.config_no then
+                                if type(comp.config_no) == "table" then
+                                    for _, cid in ipairs(comp.config_no) do
+                                        if IGNORE_CONFIG_IDS[cid] then skip = true; break end
+                                    end
+                                else
+                                    if IGNORE_CONFIG_IDS[comp.config_no] then skip = true end
+                                end
+                            end
+                            if skip then
+                                write_debug(string.format("[AutoLoot] Skipping entity id=%s due to blacklisted comp id", tostring(eid)))
+                            else
+                                local dx = playerPos.x - comp.position[1]
+                                local dy = playerPos.y - comp.position[2]
+                                local dz = playerPos.z - comp.position[3]
+                                local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                                local priority = tostring(eid):find('ins_entity') and 0 or 1
+                                table.insert(targets, {
+                                    entity_no = eno,
+                                    entity_id = eid,
+                                    luaEnt = luaEnt,
+                                    comp = comp,
+                                    distance = dist,
+                                    priority = priority
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    table.sort(targets, function(a, b)
+        if a.priority ~= b.priority then return a.priority < b.priority end
+        return a.distance < b.distance
+    end)
+    for i = 1, #targets do
+        local t = targets[i]
+        local ways = {}
+        local seen = {}
+        if interact_misc then
+            local ok_ways, possible = pcall(function()
+                return interact_misc.get_all_possible_active_ways(t.entity_no)
+            end)
+            if ok_ways and possible then
+                for _, w in ipairs(possible) do
+                    if not seen[w] then seen[w] = true; table.insert(ways, w) end
+                end
+            end
+        end
+        local comp_id = nil
+        if t.comp and t.comp.components then
+            for cid, comp_data in pairs(t.comp.components) do
+                comp_id = cid
+                if comp_data.status_no and not seen[comp_data.status_no] then
+                    seen[comp_data.status_no] = true
+                    table.insert(ways, comp_data.status_no)
+                end
+                if comp_data.config_no and not seen[comp_data.config_no] then
+                    seen[comp_data.config_no] = true
+                    table.insert(ways, comp_data.config_no)
+                end
+            end
+        end
+        if #ways > 0 then
+            pcall(function() mp_local:set_interact_target_id(t.entity_id) end)
+            for _, way in ipairs(ways) do
+                pcall(function()
+                    mp_local:trigger_active_interact(way, t.entity_id, nil, nil, comp_id)
+                end)
+            end
+            pcall(function() mp_local:trigger_active_interact() end)
+        end
+    end
+    write_debug("[AutoLoot] Completed run")
+end
+-- 5. SPEED LOGIC
+local function apply_new_gm_speed(speed)
+    local mod = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+    local action = nil
+    pcall(function() action = portable.import(mod) end)
+    if action and action.set_game_speed then
+        pcall(action.set_game_speed, speed)
+        return true
+    end
+    return false
+end
+local function apply_old_dialog_speed(speed, enable)
+    if G then
+        if G.dialog_global_time_scale ~= nil then G.dialog_global_time_scale = speed end
+        if G.space then
+            local space = G.space
+            if space.dialog_global_time_scale ~= nil then space.dialog_global_time_scale = speed end
+            if space.dialog_set_global_time_scale then pcall(space.dialog_set_global_time_scale, space, speed) end
+            if space.imp_dialogs_manager then
+                local dm = space.imp_dialogs_manager
+                if dm.dialog_set_global_time_scale then pcall(dm.dialog_set_global_time_scale, dm, speed) end
+            end
+        end
+        local mp = G.main_player
+        if mp and mp.dialog_set_time_speed_scale then
+            pcall(mp.dialog_set_time_speed_scale, mp, enable, speed)
+        end
+    end
+end
+_G.RunSetSpeed = function(valIndex)
+    local speeds = {1.0, 1.5, 3.0, 5.0, 10.0, 30.0}
+    local targetSpeed = speeds[valIndex] or 1.0
+    local isEnable = (valIndex > 1)
+    apply_new_gm_speed(targetSpeed)
+    apply_old_dialog_speed(targetSpeed, isEnable)
+    write_debug("Set Speed to: x" .. targetSpeed)
+end
+-- 6. AUTO BUFF FUNCTION (for reference, not used in buff menu)
+_G.RunAutoBuff = function()
+    local mp = G and G.main_player
+    if not mp then return end
+    --to disable any of these buffs add (--) before the line:
+    --Example:
+    --pcall(mp.add_buff, mp, xxxxxxx)
+    --To enable it back remove the (--) at the first part of the line
+   
+    pcall(mp.add_buff, mp, 30302) -- increase damage
+    pcall(mp.add_buff, mp, 30303) -- increase defense
+    pcall(mp.add_buff, mp, 30379) -- reduce 30% damage received
+    pcall(mp.add_buff, mp, 30333) -- reduce 30% damage received
+    pcall(mp.add_buff, mp, 30376) -- reduce 40% damage received
+    pcall(mp.add_buff, mp, 30334) -- reduce 50% damage received
+    pcall(mp.add_buff, mp, 30406) -- reduce 50% damage received
+    pcall(mp.add_buff, mp, 107011) -- increase healing damage
+    pcall(mp.add_buff, mp, 107031) -- increase damage (stacks)
+    pcall(mp.add_buff, mp, 30407) -- untargettable
+    pcall(mp.add_buff, mp, 30372) -- invincible, reduce 90% true damage
+    pcall(mp.add_buff, mp, 30310) -- iron body
+    pcall(mp.add_buff, mp, 30314) -- drunk, damage + lifesteal
+    pcall(mp.add_buff, mp, 70108) -- remove silence status
+    pcall(mp.add_buff, mp, 70116) -- immune to silence and stun VIP
+    pcall(mp.add_buff, mp, 70122) -- immune to slow VIP
+    -- pcall(mp.add_buff, mp, 70138) -- resurrect lv3, increase 4 VIP
+    pcall(mp.add_buff, mp, 70184) -- defense can resist full screen damage VIP
+    pcall(mp.add_buff, mp, 109040) -- increase HP and crit Fledgeling
+    pcall(mp.add_buff, mp, 109041) -- increase HP and crit Fledgeling
+    pcall(mp.add_buff, mp, 200005) -- +10% movement speed
+    pcall(mp.add_buff, mp, 200071) -- Overlord /霸体 (super armor)
+    pcall(mp.add_buff, mp, 200006) -- -10% chance to receive status ailments
+    pcall(mp.add_buff, mp, 200035) -- Continuous HP regeneration
+    pcall(mp.add_buff, mp, 200036) -- Continuous HP regeneration
+    pcall(mp.add_buff, mp, 200102) -- Healing / recovery
+    pcall(mp.add_buff, mp, 200059) -- Shield
+    pcall(mp.add_buff, mp, 200083) -- Shield
+    pcall(mp.add_buff, mp, 200099) -- Shield = 25% of max HP
+    pcall(mp.add_buff, mp, 200086) -- 80% damage immunity (HP-based)
+    pcall(mp.add_buff, mp, 102381) -- fall damage immunity
+    pcall(mp.add_buff, mp, 200093) -- +10% HP-based damage
+    pcall(mp.add_buff, mp, 200094) -- +15% HP-based damage
+    -- pcall(mp.add_buff, mp, 200095) -- +20% HP-based damage
+    pcall(mp.add_buff, mp, 200123) -- +25% HP-based damage
+    pcall(mp.add_buff, mp, 30028) -- Concentration: Increases damage (10 seconds)
+    pcall(mp.add_buff, mp, 70141) -- recover buff
+    pcall(mp.add_buff, mp, 30328) -- idk yet
+    pcall(mp.add_buff, mp, 30366) -- Completely blocks the next 3 hits
+    pcall(mp.add_buff, mp, 70063) -- stamina/full recovery
+    pcall(mp.add_buff, mp, 109550) -- Spicy Bun: lose Qi over time; +20% damage; hitting restores 3 Qi
+    pcall(mp.add_buff, mp, 109551) -- Meat Bun: +15% skill damage when HP>90%; +7.5% HP drain when HP<50%
+    pcall(mp.add_buff, mp, 109552) -- Coriander Bun: +5% skill damage; +5% move speed; -10% physical defense
+    pcall(mp.add_buff, mp, 109553) -- Mint Bun: Active skill cooldown -20%; Endurance Recovery +30%
+    pcall(mp.add_buff, mp, 109554) -- Big Bun: +10% DMG Reduction when HP shield present; convert remaining shield to HP on expire
+    pcall(mp.add_buff, mp, 109555) -- Wasabi Bun: Enrage on damage: +15% damage; +5% affinity; -20% physical defense
+    pcall(mp.add_buff, mp, 109556) -- Mega Bun: +15% Max HP; +20% Max Endurance; -10% damage
+    pcall(mp.add_buff, mp, 109557) -- Intestine Bun: +25% healing and healing received; doubled when HP<30%
+    pcall(mp.add_buff, mp, 109558) -- Donkey Bun: Healing restores extra 2% of target's Max HP and Qi
+    pcall(mp.add_buff, mp, 109559) -- Energy Bun: Reduces damage >30% Max HP by 50%; increases damage taken next 5s by 20%; 5min CD
+    pcall(mp.add_buff, mp, 109560) -- Wasabi Overload: +15% damage; +5% affinity; -20% physical defense
+end
+-- 7. HIDDEN UTILS
+local function refresh_combat_menu()
+    local gm_combat = package.loaded["hexm.client.debug.gm.gm_commands.gm_combat"]
+    if gm_combat and gm_combat.gm_open_combat_train then gm_combat.gm_open_combat_train() end
+end
+-- 8. Permanent Buffs (for reference)
+_G.RunPermanentBuffs = function()
+    write_debug("[PermanentBuffs] Starting buff application")
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[PermanentBuffs] ERROR: main player not found")
+        return
+    end
+    local action = nil
+    pcall(function()
+        action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+    end)
+    if not action then
+        write_debug("[PermanentBuffs] ERROR: combat_train_action not available")
+        return
+    end
+    local eid = mp_local.entity_id
+    local reason = "gm"
+    local level = 5
+    local duration = 10675199116730015
+    local function apply_buff(buff_id, note)
+        local ok = pcall(function()
+            action.add_buff(buff_id, eid, duration, level, eid, reason)
+        end)
+        if ok then
+            write_debug(string.format("[PermanentBuffs] add_buff id=%d ok (%s)", buff_id, note or ""))
+            return true
+        else
+            local ok2 = pcall(function()
+                action:add_buff(buff_id, eid, duration, level, eid, reason)
+            end)
+            if ok2 then
+                write_debug(string.format("[PermanentBuffs] add_buff(method) id=%d ok (%s)", buff_id, note or ""))
+                return true
+            else
+                write_debug(string.format("[PermanentBuffs] add_buff FAILED id=%d (%s)", buff_id, note or ""))
+                return false
+            end
+        end
+    end
+    local applied = 0
+    local function apply(id, note) if apply_buff(id, note) then applied = applied + 1 end end
+    -- Buff list
+    apply(30302, "increase damage")
+    apply(30303, "increase defense")
+    apply(30379, "reduce 30% damage received")
+    apply(30333, "reduce 30% damage received")
+    apply(30376, "reduce 40% damage received")
+    apply(30334, "reduce 50% damage received")
+    apply(30406, "reduce 50% damage received")
+    apply(107011, "increase healing damage")
+    apply(107031, "increase damage (stacks)")
+    apply(30407, "untargettable")
+    apply(30372, "invincible, reduce 90% true damage")
+    apply(30310, "iron body")
+    apply(30314, "drunk, damage + lifesteal")
+    apply(70108, "remove silence status")
+    apply(70116, "immune to silence and stun VIP")
+    apply(70122, "immune to slow VIP")
+    -- apply(70138, "resurrect lv3, increase 4 VIP")
+    apply(70184, "defense can resist full screen damage VIP")
+    apply(109040, "increase HP and crit Fledgeling")
+    apply(109041, "increase HP and crit Fledgeling")
+    apply(200005, "+10% movement speed")
+    apply(200071, "Overlord /霸体 (super armor)")
+    apply(200006, "-10% chance to receive status ailments")
+    apply(200035, "Continuous HP regeneration")
+    apply(200036, "Continuous HP regeneration")
+    apply(200102, "Healing / recovery")
+    apply(200059, "Shield")
+    apply(200083, "Shield")
+    apply(200099, "Shield = 25% of max HP")
+    apply(200086, "80% damage immunity (HP-based)")
+    apply(102381, "fall damage immunity")
+    apply(200093, "+10% HP-based damage")
+    apply(200094, "+15% HP-based damage")
+    -- apply(200095, "+20% HP-based damage")
+    apply(200123, "+25% HP-based damage")
+    apply(30028, "Concentration: Increases damage (10 seconds)")
+    apply(70141, "recover buff")
+    apply(30328, "idk yet")
+    apply(30366, "Completely blocks the next 3 hits")
+    apply(70063, "stamina/full recovery")
+    apply(109550, "Spicy Bun: lose Qi over time; +20% damage; hitting restores 3 Qi")
+    apply(109551, "Meat Bun: +15% skill damage when HP>90%; +7.5% HP drain when HP<50%")
+    apply(109552, "Coriander Bun: +5% skill damage; +5% move speed; -10% physical defense")
+    apply(109553, "Mint Bun: Active skill cooldown -20%; Endurance Recovery +30%")
+    apply(109554, "Big Bun: +10% DMG Reduction when HP shield present; convert remaining shield to HP on expire")
+    apply(109555, "Wasabi Bun: Enrage on damage: +15% damage; +5% affinity; -20% physical defense")
+    apply(109556, "Mega Bun: +15% Max HP; +20% Max Endurance; -10% damage")
+    apply(109557, "Intestine Bun: +25% healing and healing received; doubled when HP<30%")
+    apply(109558, "Donkey Bun: Healing restores extra 2% of target's Max HP and Qi")
+    apply(109559, "Energy Bun: Reduces damage >30% Max HP by 50%; increases damage taken next 5s by 20%; 5min CD")
+    apply(109560, "Wasabi Overload: +15% damage; +5% affinity; -20% physical defense")
+    write_debug(string.format("[PermanentBuffs] Completed. Applied=%d", applied))
+end
+-- 9. Remove Buffs
+_G.RunRemoveBuffs = function()
+    write_debug("[RemoveBuffs] Starting buff removal")
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[RemoveBuffs] ERROR: main player not found")
+        return
+    end
+    local mod_name = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+    local action = nil
+    pcall(function() action = portable.import(mod_name) end)
+    write_debug("[RemoveBuffs] combat_train_action loaded: " .. tostring(action ~= nil))
+    local function safe_call(desc, fn)
+        local ok, err = pcall(fn)
+        if ok then
+            write_debug("[RemoveBuffs] ✔ " .. desc)
+            return true
+        else
+            write_debug("[RemoveBuffs] ✘ " .. desc .. " -> " .. tostring(err))
+            return false
+        end
+    end
+    -- Try multiple ways to detect whether the player currently has a buff.
+    local function has_buff(buff_id)
+        local ok, res
+        ok, res = pcall(function()
+            if mp_local.has_buff then return mp_local.has_buff(mp_local, buff_id) end
+            if mp_local["has_buff"] and type(mp_local["has_buff"]) == "function" then return mp_local:has_buff(buff_id) end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+        ok, res = pcall(function()
+            if mp_local.get_buff then return mp_local.get_buff(mp_local, buff_id) ~= nil end
+            if mp_local["get_buff"] and type(mp_local["get_buff"]) == "function" then return mp_local:get_buff(buff_id) ~= nil end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+        ok, res = pcall(function()
+            if mp_local.buffs and type(mp_local.buffs) == "table" then
+                if mp_local.buffs[buff_id] then return true end
+                for _, v in pairs(mp_local.buffs) do
+                    if type(v) == "table" and (v.id == buff_id or v.buff_id == buff_id) then
+                        return true
+                    end
+                end
+            end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+        return false
+    end
+    local function remove_buff(buff_id)
+        local eid = mp_local and mp_local.entity_id
+        local removed = false
+        if action and action.rm_buff then
+            removed = safe_call(string.format("action.rm_buff(%d)", buff_id), function() action.rm_buff(buff_id) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:rm_buff(%d)", buff_id), function() action:rm_buff(buff_id) end) or removed
+            if removed then return true end
+        end
+        if action and action.remove_buff then
+            removed = safe_call(string.format("action.remove_buff(%d, %s)", buff_id, tostring(eid)), function() action.remove_buff(buff_id, eid) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:remove_buff(%d, %s)", buff_id, tostring(eid)), function() action:remove_buff(buff_id, eid) end) or removed
+            if removed then return true end
+        end
+        if action and action.del_buff then
+            removed = safe_call(string.format("action.del_buff(%d, %s)", buff_id, tostring(eid)), function() action.del_buff(buff_id, eid) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:del_buff(%d, %s)", buff_id, tostring(eid)), function() action:del_buff(buff_id, eid) end) or removed
+            if removed then return true end
+        end
+        if action and action.clear_buff then
+            removed = safe_call(string.format("action.clear_buff(%d, %s)", buff_id, tostring(eid)), function() action.clear_buff(buff_id, eid) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:clear_buff(%d, %s)", buff_id, tostring(eid)), function() action:clear_buff(buff_id, eid) end) or removed
+            if removed then return true end
+        end
+        if mp_local then
+            if mp_local.remove_buff then
+                removed = safe_call(string.format("mp.remove_buff(mp, %d)", buff_id), function() mp_local.remove_buff(mp_local, buff_id) end) or removed
+                if removed then return true end
+                removed = safe_call(string.format("mp:remove_buff(%d)", buff_id), function() mp_local:remove_buff(buff_id) end) or removed
+                if removed then return true end
+            end
+            if mp_local.del_buff then
+                removed = safe_call(string.format("mp.del_buff(mp, %d)", buff_id), function() mp_local.del_buff(mp_local, buff_id) end) or removed
+                if removed then return true end
+                removed = safe_call(string.format("mp:del_buff(%d)", buff_id), function() mp_local:del_buff(buff_id) end) or removed
+                if removed then return true end
+            end
+            if mp_local.clear_all_buffs then
+                removed = safe_call("mp.clear_all_buffs(mp)", function() mp_local.clear_all_buffs(mp_local) end) or removed
+                if removed then return true end
+            end
+        end
+        if not removed then
+            write_debug(string.format("[RemoveBuffs] Could not remove buff id=%d with known methods", buff_id))
+        end
+        return removed
+    end
+    -- wrapper that mirrors PermanentBuffs' list style but removes instead of adding
+    local removed_count = 0
+    local function remove(id, note)
+        local present = false
+        local ok, pres = pcall(function() return has_buff(id) end)
+        if ok then present = pres else present = false end
+        if not present then
+            write_debug(string.format("[RemoveBuffs] Skipping id=%d (%s) - not present", id, note or ""))
+            return
+        end
+        if remove_buff(id) then
+            write_debug(string.format("[RemoveBuffs] remove_buff id=%d ok (%s)", id, note or ""))
+            removed_count = removed_count + 1
+        else
+            write_debug(string.format("[RemoveBuffs] remove_buff FAILED id=%d (%s)", id, note or ""))
+        end
+    end
+    -- Buff list
+    remove(30302, "increase damage")
+    remove(30303, "increase defense")
+    remove(30379, "reduce 30% damage received")
+    remove(30333, "reduce 30% damage received")
+    remove(30376, "reduce 40% damage received")
+    remove(30334, "reduce 50% damage received")
+    remove(30406, "reduce 50% damage received")
+    remove(107011, "increase healing damage")
+    remove(107031, "increase damage (stacks)")
+    remove(30407, "untargettable")
+    remove(30372, "invincible, reduce 90% true damage")
+    remove(30310, "iron body")
+    remove(30314, "drunk, damage + lifesteal")
+    remove(70108, "remove silence status")
+    remove(70116, "immune to silence and stun VIP")
+    remove(70122, "immune to slow VIP")
+    remove(70138, "resurrect lv3, increase 4 VIP")
+    remove(70184, "defense can resist full screen damage VIP")
+    remove(109040, "increase HP and crit Fledgeling")
+    remove(109041, "increase HP and crit Fledgeling")
+    remove(200005, "+10% movement speed")
+    remove(200071, "Overlord /霸体 (super armor)")
+    remove(200006, "-10% chance to receive status ailments")
+    remove(200035, "Continuous HP regeneration")
+    remove(200036, "Continuous HP regeneration")
+    remove(200102, "Healing / recovery")
+    remove(200059, "Shield")
+    remove(200083, "Shield")
+    remove(200099, "Shield = 25% of max HP")
+    remove(200086, "80% damage immunity (HP-based)")
+    remove(102381, "fall damage immunity")
+    remove(200093, "+10% HP-based damage")
+    remove(200094, "+15% HP-based damage")
+    remove(200095, "+20% HP-based damage")
+    remove(200123, "+25% HP-based damage")
+    remove(30028, "Concentration: Increases damage (10 seconds)")
+    remove(70141, "recover buff")
+    remove(30328, "idk yet")
+    remove(30366, "Completely blocks the next 3 hits")
+    remove(70063, "stamina/full recovery")
+    remove(30346, "Evasion / Agility State (Causes animation locks)")
+    remove(70182, "Ice Shield (Visual clutter/glitchy interactions)")
+    remove(70183, "Fire Shield (Visual clutter/glitchy interactions)")
+    remove(70045, "Unknown/Unstable State")
+    remove(70186, "Elemental Shield variant Power of fire")
+    remove(70187, "Elemental Shield variant Power of ice flower")
+    remove(109550, "Spicy Bun: lose Qi over time; +20% damage; hitting restores 3 Qi")
+    remove(109551, "Meat Bun: +15% skill damage when HP>90%; +7.5% HP drain when HP<50%")
+    remove(109552, "Coriander Bun: +5% skill damage; +5% move speed; -10% physical defense")
+    remove(109553, "Mint Bun: Active skill cooldown -20%; Endurance Recovery +30%")
+    remove(109554, "Big Bun: +10% DMG Reduction when HP shield present; convert remaining shield to HP on expire")
+    remove(109555, "Wasabi Bun: Enrage on damage: +15% damage; +5% affinity; -20% physical defense")
+    remove(109556, "Mega Bun: +15% Max HP; +20% Max Endurance; -10% damage")
+    remove(109557, "Intestine Bun: +25% healing and healing received; doubled when HP<30%")
+    remove(109558, "Donkey Bun: Healing restores extra 2% of target's Max HP and Qi")
+    remove(109559, "Energy Bun: Reduces damage >30% Max HP by 50%; increases damage taken next 5s by 20%; 5min CD")
+    remove(109560, "Wasabi Overload: +15% damage; +5% affinity; -20% physical defense")
+    remove(30304, "reduce damage received")
+    remove(30323, "reduce damage received")
+    remove(30404, "Strong blade cosmetic")
+    remove(30308, "transfer damage received")
+    remove(30005, "immune to control")
+    remove(30398, "Boss Animation/Transformation")
+    remove(30384, "Boss Animation/Transformation")
+    write_debug(string.format("[RemoveBuffs] Completed. Removed=%d", removed_count))
+end
+-- 10. Teleport to Blissful Retreat
+_G.RunTeleportBlissfulRetreat = function()
+    write_debug("[Teleport] Attempting teleport to Blissful Retreat (ID 16)")
+    local ok, skip = pcall(require, "hexm.client.ui.windows.gm.gm_skip_window")
+    if not ok or not skip or not skip.gm_skip_flow_imp then
+        write_debug("[Teleport] ✘ gm_skip_window not available")
+        return
+    end
+    pcall(skip.gm_skip_flow_imp, 16, nil)
+    write_debug("[Teleport] ✔ Teleported to Blissful Retreat (ID 16)")
+end
+-- =================================================================================
+-- SECTION 3: BUFF LIST MENU - SIMPLE MENU (Not Scrollable)
+-- =================================================================================
+-- Buff list with toggle states
+local buffList = {
+    -- Damage Buffs
+    {id = 30302, name = "Increase Damage", state = false},
+    {id = 30303, name = "Increase Defense", state = false},
+    {id = 30379, name = "Reduce 30% Damage", state = false},
+    {id = 30333, name = "Reduce 30% Damage", state = false},
+    {id = 30376, name = "Reduce 40% Damage", state = false},
+    {id = 30334, name = "Reduce 50% Damage", state = false},
+    {id = 30406, name = "Reduce 50% Damage", state = false},
+    {id = 107011, name = "Increase Healing", state = false},
+    {id = 107031, name = "Increase Damage", state = false},
+   
+    -- Immunity Buffs
+    {id = 30407, name = "Untargettable", state = false},
+    {id = 30372, name = "Invincible", state = false},
+    {id = 30310, name = "Iron Body", state = false},
+    {id = 30314, name = "Drunk Buff", state = false},
+    {id = 70108, name = "Remove Silence", state = false},
+    {id = 70116, name = "Immune Silence/Stun", state = false},
+    {id = 70122, name = "Immune Slow", state = false},
+    {id = 70184, name = "Resist Full Screen", state = false},
+   
+    -- Stat Buffs
+    {id = 109040, name = "Inc HP/Crit", state = false},
+    {id = 109041, name = "Inc HP/Crit", state = false},
+    {id = 200005, name = "+10% Move Speed", state = false},
+    {id = 200071, name = "Super Armor", state = false},
+    {id = 200006, name = "-10% Status Ailments", state = false},
+   
+    -- Healing/Recovery
+    {id = 200035, name = "HP Regen", state = false},
+    {id = 200036, name = "HP Regen", state = false},
+    {id = 200102, name = "Healing", state = false},
+    {id = 200059, name = "Shield", state = false},
+    {id = 200083, name = "Shield", state = false},
+    {id = 200099, name = "Shield 25% HP", state = false},
+    {id = 200086, name = "80% Dmg Immunity", state = false},
+    {id = 102381, name = "Fall Dmg Immunity", state = false},
+   
+    -- Damage Buffs 2
+    {id = 200093, name = "+10% HP Dmg", state = false},
+    {id = 200094, name = "+15% HP Dmg", state = false},
+    {id = 200123, name = "+25% HP Dmg", state = false},
+    {id = 30028, name = "Concentration", state = false},
+    {id = 70141, name = "Recover Buff", state = false},
+    {id = 30328, name = "Unknown Buff", state = false},
+    {id = 30366, name = "Block 3 Hits", state = false},
+    {id = 70063, name = "Stamina Recovery", state = false},
+   
+    -- Bun Buffs
+    {id = 109550, name = "Spicy Bun", state = false},
+    {id = 109551, name = "Meat Bun", state = false},
+    {id = 109552, name = "Coriander Bun", state = false},
+    {id = 109553, name = "Mint Bun", state = false},
+    {id = 109554, name = "Big Bun", state = false},
+    {id = 109555, name = "Wasabi Bun", state = false},
+    {id = 109556, name = "Mega Bun", state = false},
+    {id = 109557, name = "Intestine Bun", state = false},
+    {id = 109558, name = "Donkey Bun", state = false},
+    {id = 109559, name = "Energy Bun", state = false},
+    {id = 109560, name = "Wasabi Overload", state = false},
+}
+-- Function to create buff toggle
+local function makeBuffToggle(buffId, buffName, varName)
+    _G[varName] = _G[varName] or false
+   
+    local toggleFunc = function()
+        _G[varName] = not _G[varName]
+        if _G[varName] then
+            pcall(mp.add_buff, mp, buffId)
+            write_debug("[Buff] Added: " .. buffName .. " (ID: " .. buffId .. ")")
+        else
+            local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+            if a then a.rm_buff(buffId) end
+            write_debug("[Buff] Removed: " .. buffName .. " (ID: " .. buffId .. ")")
+        end
+    end
+   
+    return toggleFunc, function() return _G[varName] end,
+        function() return buffName .. " < " .. (_G[varName] and "ON" or "OFF") .. " >" end
+end
+-- Focus management functions
+local function setFocusToBuff()
+    if not _G.oldMenuUp then
+        _G.oldMenuUp = _G.MenuUp
+        _G.oldMenuDown = _G.MenuDown
+        _G.oldMenuLeft = _G.MenuLeft
+        _G.oldMenuRight = _G.MenuRight
+        _G.oldMenuConfirm = _G.MenuConfirm
+    end
+    _G.MenuUp = _G.BuffMenuUp
+    _G.MenuDown = _G.BuffMenuDown
+    _G.MenuLeft = function() end  -- No left/right in buff menu
+    _G.MenuRight = function() end
+    _G.MenuConfirm = _G.BuffMenuConfirm
+end
+local function setFocusToMain()
+    if _G.oldMenuUp then
+        _G.MenuUp = _G.oldMenuUp
+        _G.MenuDown = _G.oldMenuDown
+        _G.MenuLeft = _G.oldMenuLeft
+        _G.MenuRight = _G.oldMenuRight
+        _G.MenuConfirm = _G.oldMenuConfirm
+        _G.oldMenuUp = nil
+    end
+end
+-- =========================================================
+-- SUBMENU CONTROL (USED BY hook.js)
+-- =========================================================
+_G.BuffMenuOpen = _G.BuffMenuOpen or false
+ 
+_G.CloseBuffMenu = function()
+    if _G.BUFF_MENU and _G.BUFF_MENU:getParent() then
+        _G.BUFF_MENU:removeFromParent()
+        _G.BUFF_MENU = nil
+    end
+    _G.BuffMenuOpen = false
+    setFocusToMain()
+    write_debug("[Buff Menu] Closed")
+end
+ 
+-- hook.js expects this name for the '*' key
+_G.BuffMenuBack = function()
+    if _G.CloseBuffMenu then pcall(_G.CloseBuffMenu) end
+end
+ 
+-- hook.js calls this when main menu is about to hide via '-' key
+_G.CloseAllSubMenus = function()
+    if _G.CloseBuffMenu then pcall(_G.CloseBuffMenu) end
+end
+ 
+ 
+-- Function to create Buff List Menu
+function createBuffListMenu()
+    -- Remove old buff menu if exists
+    if _G.BUFF_MENU then
+        _G.BUFF_MENU:removeFromParent()
+        _G.BUFF_MENU = nil
+    end
+   
+    write_debug("[Buff Menu] Creating Buff List Menu")
+   
+    -- EXACT RGB COLORS (same as main menu)
+    local C_BG = cc.c3b(20, 20, 25) -- Dark Background
+    local C_TEXT_OFF = cc.c3b(192, 192, 192) -- Inactive (Silver)
+    local C_TEXT_ON = cc.c3b(0, 255, 0) -- Active (Green)
+    local C_SELECTED = cc.c3b(255, 0, 255) -- Hover/Selected (Magenta)
+    local C_READONLY = cc.c3b(153, 255, 255) -- Read-only/value part (Cyan)
+   
+    -- DIMENSIONS (same as main menu)
+    local btnHeight = 90
+    local spacing = 16
+    local headerSpace = 160
+    local footerSpace = 400
+    local panelWidth = 940
+    local buttonWidth = panelWidth - 60
+   
+        -- Calculate full content height (ALL buttons, even if screen is smaller)
+    local totalButtons = #buffList
+    local fullContentHeight = totalButtons * (btnHeight + spacing)
+ 
+    -- Bottom padding inside panel (so content doesn't touch the bottom)
+    local listBottomPadding = 40
+ 
+    -- Clamp panel height to screen, but KEEP fullContentHeight for scrolling
+    local maxHeight = size.height - 100
+    local totalHeight = math.min(headerSpace + fullContentHeight + listBottomPadding, maxHeight)
+ 
+    -- Visible list window (area where buttons are allowed to be visible)
+    local listViewportH = totalHeight - headerSpace - listBottomPadding
+    if listViewportH < btnHeight then listViewportH = btnHeight end
+ 
+   
+    -- Create panel
+    local panel = ccui.Layout:create()
+    panel:setContentSize(cc.size(panelWidth, totalHeight))
+    panel:setBackGroundColorType(1)
+    panel:setBackGroundColor(C_BG)
+    panel:setBackGroundColorOpacity(240)
+   
+    -- Position at center
+    local startX = (size.width - panelWidth) / 2
+    local startY = (size.height - totalHeight) / 2
+    panel:setPosition(cc.p(startX, startY))
+   
+    scene:addChild(panel, 9999)
+    _G.BUFF_MENU = panel
+ 
+    -- Create drag area (header) to handle dragging without swallowing all touches
+    local dragAreaHeight = 100
+    local dragArea = ccui.Layout:create()
+    dragArea:setContentSize(cc.size(panelWidth, dragAreaHeight))
+    dragArea:setPosition(cc.p(0, totalHeight - dragAreaHeight))
+    panel:addChild(dragArea)
+   
+    -- Header
+    local header = ccui.Text:create("Buff List Menu", "Arial", 54)
+    header:setColor(cc.c3b(255, 230, 120))
+    header:enableOutline(cc.c4b(0, 255, 0, 255), 2)
+    header:setAnchorPoint(cc.p(0.5, 1))
+    header:setPosition(cc.p(panelWidth / 2, dragAreaHeight - 40))
+    dragArea:addChild(header)
+   
+    -- Create buff toggle buttons
+    local buffButtons = {}
+    local buffSelectedIndex = 1
+	
+	    -- ==========================
+    -- SCROLLABLE / CLIPPED LIST
+    -- ==========================
+    local listViewport = ccui.Layout:create()
+    listViewport:setContentSize(cc.size(panelWidth, listViewportH))
+    listViewport:setPosition(cc.p(0, listBottomPadding))
+    listViewport:setClippingEnabled(true)
+    panel:addChild(listViewport)
+ 
+    local listContent = ccui.Layout:create()
+    listContent:setAnchorPoint(cc.p(0, 1)) -- top-left
+    listContent:setContentSize(cc.size(panelWidth, fullContentHeight))
+    listContent:setPosition(cc.p(0, listViewportH)) -- align top of content to top of viewport
+    listViewport:addChild(listContent)
+ 
+    local scroll = 0
+    local maxScroll = math.max(0, fullContentHeight - listViewportH)
+ 
+    local function applyScroll(newScroll)
+        scroll = math.max(0, math.min(maxScroll, newScroll))
+        -- with anchor top, pushing position UP reveals lower items
+        listContent:setPosition(cc.p(0, listViewportH + scroll))
+    end
+ 
+    local function ensureSelectedVisible()
+        if maxScroll <= 0 then return end
+ 
+        local idx = buffSelectedIndex
+        local btnTop = fullContentHeight - ((idx - 1) * (btnHeight + spacing))
+        local btnBottom = btnTop - btnHeight
+ 
+        local yMax = fullContentHeight - scroll
+        local yMin = yMax - listViewportH
+ 
+        -- selected is ABOVE visible window -> scroll up (toward top)
+        if btnTop > yMax then
+            applyScroll(fullContentHeight - btnTop)
+        -- selected is BELOW visible window -> scroll down
+        elseif btnBottom < yMin then
+            applyScroll(fullContentHeight - listViewportH - btnBottom)
+        end
+    end
+ 
+   
+    for i, buff in ipairs(buffList) do
+        local varName = "BUFF_" .. buff.id
+        local execFunc, isActiveFunc, dynamicLabelFunc = makeBuffToggle(buff.id, buff.name, varName)
+       
+        local b = ccui.Button:create()
+        b:setTitleFontSize(56)
+        b:setScale9Enabled(true)
+        b:setContentSize(cc.size(buttonWidth, btnHeight))
+        b:setColor(C_BG)
+        b:setTitleText("")
+       
+        b:setAnchorPoint(cc.p(0.5, 1))
+        b:setPosition(cc.p(panelWidth / 2, fullContentHeight - ((i-1) * (btnHeight + spacing))))
+       
+        -- Text node for the button
+        local mainTextNode = ccui.Text:create("", "Arial", 56)
+        mainTextNode:setAnchorPoint(cc.p(0.5, 0.5))
+        mainTextNode:setPosition(cc.p(buttonWidth / 2, btnHeight / 2))
+        b:addChild(mainTextNode, 1)
+       
+        local btnObj = {
+            btn = b,
+            mainText = mainTextNode,
+            execFunc = execFunc,
+            isActive = isActiveFunc,
+            updateText = function()
+                local text = buff.name
+                if dynamicLabelFunc then
+                    text = dynamicLabelFunc()
+                elseif isActiveFunc then
+                    local val = isActiveFunc()
+                    text = buff.name .. (val and " < ON >" or " < OFF >")
+                end
+                mainTextNode:setString(text)
+               
+                -- Update color based on state
+                local isSelected = (i == buffSelectedIndex)
+                local targetColor = C_TEXT_OFF
+               
+                if isActiveFunc and isActiveFunc() then
+                    targetColor = C_TEXT_ON
+                end
+               
+                if isSelected then
+                    targetColor = C_SELECTED
+                    b:setScale(1.05)
+                else
+                    b:setScale(1.0)
+                end
+               
+                mainTextNode:setColor(targetColor)
+            end
+        }
+       
+        b:addTouchEventListener(function(sender, eventType)
+            if eventType == 2 then
+                if execFunc then pcall(execFunc) end
+                btnObj.updateText()
+            end
+        end)
+       
+        listContent:addChild(b)
+        table.insert(buffButtons, btnObj)
+    end
+   
+    -- Function to update buff button visuals
+    local function updateBuffSelection()
+        for i, btnObj in ipairs(buffButtons) do
+            local isSelected = (i == buffSelectedIndex)
+            local targetColor = C_TEXT_OFF
+           
+            if btnObj.isActive and btnObj.isActive() then
+                targetColor = C_TEXT_ON
+            end
+           
+            if isSelected then
+                targetColor = C_SELECTED
+                btnObj.btn:setScale(1.05)
+            else
+                btnObj.btn:setScale(1.0)
+            end
+           
+            btnObj.mainText:setColor(targetColor)
+        end
+		ensureSelectedVisible()
+ 
+    end
+   
+    -- Initialize button texts
+    for _, btnObj in ipairs(buffButtons) do
+        if btnObj.updateText then btnObj.updateText() end
+    end
+   
+    updateBuffSelection()
+	applyScroll(0)
+ 
+   
+    -- Navigation functions for buff menu
+    _G.BuffMenuUp = function()
+        buffSelectedIndex = buffSelectedIndex - 1
+        if buffSelectedIndex < 1 then buffSelectedIndex = #buffButtons end
+        updateBuffSelection()
+    end
+   
+    _G.BuffMenuDown = function()
+        buffSelectedIndex = buffSelectedIndex + 1
+        if buffSelectedIndex > #buffButtons then buffSelectedIndex = 1 end
+        updateBuffSelection()
+    end
+   
+    _G.BuffMenuConfirm = function()
+        local btnObj = buffButtons[buffSelectedIndex]
+        if btnObj and btnObj.execFunc then
+            pcall(btnObj.execFunc)
+            btnObj.updateText()
+        end
+    end
+   
+    _G.BuffMenuBack = function()
+        if _G.CloseBuffMenu then pcall(_G.CloseBuffMenu) end
+    end
+   
+    -- Close Button
+    local closeBtn = ccui.Button:create()
+    closeBtn:setTitleText("X")
+    closeBtn:setTitleFontSize(48)
+    closeBtn:setTitleColor(cc.c3b(255, 80, 80))
+    closeBtn:setPosition(cc.p(panelWidth - 50, dragAreaHeight - 50))
+    closeBtn:addTouchEventListener(function(s,e)
+        if e == 2 then
+            _G.BuffMenuBack()
+        end
+    end)
+    dragArea:addChild(closeBtn)
+   
+    -- Minimize Button
+    local btn_minimize = ccui.Button:create()
+    btn_minimize:setTitleText("−")
+    btn_minimize:setTitleFontSize(52)
+    btn_minimize:setTitleColor(cc.c3b(255, 255, 120))
+    btn_minimize:setPosition(cc.p(panelWidth - 130, dragAreaHeight - 50))
+    btn_minimize:addTouchEventListener(function(s,e)
+        if e == 2 then
+            panel:setVisible(false)
+            setFocusToMain()  -- Restore main menu focus on minimize/hide
+        end
+    end)
+    dragArea:addChild(btn_minimize)
+   
+    -- Dragging Logic (now on dragArea instead of panel)
+    dragArea:setTouchEnabled(true)
+    local isDragging = false
+    local dragOffset = nil
+   
+    local function keepPanelInBounds(newX, newY)
+        local pSize = panel:getContentSize()
+        local minX, maxX = 0, size.width - pSize.width
+        local minY, maxY = 0, size.height - pSize.height
+        return math.max(minX, math.min(maxX, newX)), math.max(minY, math.min(maxY, newY))
+    end
+   
+    dragArea:addTouchEventListener(function(sender, eventType)
+        if eventType == 0 then
+            local tPos = sender:getTouchBeganPosition()
+            local pPos = panel:getPosition()
+            dragOffset = cc.p(tPos.x - pPos.x, tPos.y - pPos.y)
+            isDragging = true
+            return true
+        elseif eventType == 1 and isDragging then
+            local tPos = sender:getTouchMovePosition()
+            local newX, newY = keepPanelInBounds(tPos.x - dragOffset.x, tPos.y - dragOffset.y)
+            panel:setPosition(cc.p(newX, newY))
+            return true
+        elseif eventType == 2 or eventType == 3 then
+            isDragging = false
+            return true
+        end
+    end)
+   
+    write_debug("[Buff Menu] Created with " .. #buffButtons .. " buffs")
+    return panel
+end
+-- Function to toggle buff menu visibility
+_G.ToggleBuffMenu = function()
+    if not _G.BUFF_MENU or not _G.BUFF_MENU:getParent() then
+        createBuffListMenu()
+        _G.BUFF_MENU:setVisible(true)
+        setFocusToBuff()
+		_G.BuffMenuOpen = true
+        write_debug("[Buff Menu] Opened")
+    else
+        local isVisible = _G.BUFF_MENU:isVisible()
+        _G.BUFF_MENU:setVisible(not isVisible)
+        if not isVisible then
+            setFocusToBuff()
+        else
+            setFocusToMain()
+        end
+        write_debug("[Buff Menu] Toggled visibility: " .. tostring(_G.BUFF_MENU:isVisible()))
+		_G.BuffMenuOpen = (_G.BUFF_MENU and _G.BUFF_MENU:getParent()) and true or false
+    end
+end
+-- =================================================================================
+-- SECTION 4: STATE MANAGEMENT & LOGIC (Main Menu)
+-- =================================================================================
+-- State Variables
+_G.SPEED_INDEX = 1 -- 1=Normal
+_G.LOOT_STATE = 0 -- 0=Off, 1=Once, 2=Loop
+_G.BUFF_STATE = 0
+_G.RECOVER_STATE = 0
+-- Loop intervals (seconds) - edit these
+_G.LOOT_LOOP_SEC = _G.LOOT_LOOP_SEC or 1.0
+_G.BUFF_LOOP_SEC = _G.BUFF_LOOP_SEC or 3.0
+_G.RECOVER_LOOP_SEC = _G.RECOVER_LOOP_SEC or 5.0
+-- Definitions
+local SPEED_LABELS = {"Normal", "x1.5", "x3.0", "x5.0", "x10.0", "x30.0"}
+local STATE_LABELS = {[0]="OFF", [1]="ONCE", [2]="LOOP"}
+-- Toggles
+_G.GM_GODMODE = _G.GM_GODMODE or false
+_G.GM_ONEHITKILL = _G.GM_ONEHITKILL or false
+_G.GM_STAMINA = _G.GM_STAMINA or false
+_G.GM_INVISIBLE = _G.GM_INVISIBLE or false
+_G.GM_NPCDUMB = _G.GM_NPCDUMB or false
+-- Action Timers
+local loot_action, buff_action, recover_action = nil, nil, nil
+local buttonList = {}
+local selectedIndex = 1
+-- Forward Declaration
+local function UpdateButtonVisuals() end
+_G.ForceUpdateVisuals = function() UpdateButtonVisuals() end
+-- --- LOGIC WRAPPERS ---
+_G.ToggleSpeed = function()
+    _G.SPEED_INDEX = (_G.SPEED_INDEX % #SPEED_LABELS) + 1
+    _G.RunSetSpeed(_G.SPEED_INDEX)
+    UpdateButtonVisuals()
+end
+local function HandleLoopAction(state, actionRef, func, delaySec)
+    -- default delay if nil/invalid
+    delaySec = tonumber(delaySec) or 5.0
+    if delaySec < 0.05 then delaySec = 0.05 end
+    -- stop old loop action
+    if actionRef then
+        local scene = cc.Director:getInstance():getRunningScene()
+        if scene then scene:stopAction(actionRef) end
+        actionRef = nil
+    end
+    -- EXECUTE IMMEDIATELY regardless of Once or Loop
+    if state == 1 or state == 2 then
+        func()
+    end
+    -- IF LOOP: Start the timer for the *next* execution
+    if state == 2 then
+        local scene = cc.Director:getInstance():getRunningScene()
+        if scene then
+            actionRef = cc.RepeatForever:create(cc.Sequence:create({
+                cc.DelayTime:create(delaySec),
+                cc.CallFunc:create(function()
+                    func()
+                end)
+            }))
+            scene:runAction(actionRef)
+        end
+    end
+    return actionRef
+end
+_G.ToggleAutoLootLoop = function()
+    _G.LOOT_STATE = (_G.LOOT_STATE + 1) % 3
+    loot_action = HandleLoopAction(_G.LOOT_STATE, loot_action, _G.RunAutoLoot, _G.LOOT_LOOP_SEC)
+    UpdateButtonVisuals()
+end
+_G.ToggleAutoBuffLoop = function()
+    _G.BUFF_STATE = (_G.BUFF_STATE + 1) % 3
+    buff_action = HandleLoopAction(_G.BUFF_STATE, buff_action, _G.RunAutoBuff, _G.BUFF_LOOP_SEC)
+    UpdateButtonVisuals()
+end
+_G.ToggleRecover = function()
+    _G.RECOVER_STATE = (_G.RECOVER_STATE + 1) % 3
+    recover_action = HandleLoopAction(_G.RECOVER_STATE, recover_action, _G.RunRecover, _G.RECOVER_LOOP_SEC)
+    UpdateButtonVisuals()
+end
+-- --- CYCLE FUNCTIONS ---
+_G.CycleSpeed = function(dir)
+    _G.SPEED_INDEX = _G.SPEED_INDEX + dir
+    if _G.SPEED_INDEX < 1 then _G.SPEED_INDEX = #SPEED_LABELS end
+    if _G.SPEED_INDEX > #SPEED_LABELS then _G.SPEED_INDEX = 1 end
+    _G.RunSetSpeed(_G.SPEED_INDEX)
+    UpdateButtonVisuals()
+end
+_G.CycleState = function(globalVarName, dir, maxState)
+    local val = _G[globalVarName] + dir
+    if val < 0 then val = maxState end
+    if val > maxState then val = 0 end
+    _G[globalVarName] = val
+    UpdateButtonVisuals()
+end
+_G.ExecuteLoot = function()
+    loot_action = HandleLoopAction(_G.LOOT_STATE, loot_action, _G.RunAutoLoot, _G.LOOT_LOOP_SEC)
+end
+_G.ExecuteBuff = function()
+    buff_action = HandleLoopAction(_G.BUFF_STATE, buff_action, _G.RunAutoBuff, _G.BUFF_LOOP_SEC)
+end
+_G.ExecuteRecover = function()
+    recover_action = HandleLoopAction(_G.RECOVER_STATE, recover_action, _G.RunRecover, _G.RECOVER_LOOP_SEC)
+end
+-- =================================================================================
+-- SECTION 5: NAVIGATION & VISUALS (CONSISTENT THEME FOR ALL BUTTONS)
+-- =================================================================================
+-- 1. EXACT RGB COLORS
+local C_BG = cc.c3b(20, 20, 25) -- Dark Background
+local C_TEXT_OFF = cc.c3b(192, 192, 192) -- Inactive (Silver)
+local C_TEXT_ON = cc.c3b(0, 255, 0) -- Active (Green)
+local C_SELECTED = cc.c3b(255, 0, 255) -- Hover/Selected (Magenta)
+local C_READONLY = cc.c3b(153, 255, 255) -- Read-only/value part (Cyan)
+-- 2. SELECTION LOGIC
+local function UpdateSelection()
+    for i, item in ipairs(buttonList) do
+        local isSelected = (i == selectedIndex)
+        -- Default to Inactive Color
+        local targetMainColor = C_TEXT_OFF
+        -- If the option is Active (ON/LOOP/etc), turn Green
+        if item.isActive and item.isActive() then
+            targetMainColor = C_TEXT_ON
+        end
+        -- Selected overrides main color only
+        if isSelected then
+            targetMainColor = C_SELECTED
+            item.btn:setScale(1.05)
+        else
+            item.btn:setScale(1.0)
+        end
+        -- We render ALL button text via ccui.Text nodes now
+        if item.mainText then
+            item.mainText:setColor(targetMainColor)
+        end
+        -- Value part always cyan (only exists on value buttons)
+        if item.valueText then
+            item.valueText:setColor(C_READONLY)
+        end
+    end
+end
+UpdateButtonVisuals = function()
+    for _, item in ipairs(buttonList) do
+        if item.updateText then item.updateText() end
+    end
+    UpdateSelection()
+end
+-- Navigation Logic
+_G.MenuUp = function()
+    selectedIndex = selectedIndex - 1
+    if selectedIndex < 1 then selectedIndex = #buttonList end
+    UpdateSelection()
+end
+_G.MenuDown = function()
+    selectedIndex = selectedIndex + 1
+    if selectedIndex > #buttonList then selectedIndex = 1 end
+    UpdateSelection()
+end
+-- Left/Right now changes VALUES (Numpad 4/6)
+_G.MenuLeft = function()
+    local item = buttonList[selectedIndex]
+    if item and item.cycleFunc then
+        item.cycleFunc(-1)
+        UpdateButtonVisuals()
+    end
+end
+_G.MenuRight = function()
+    local item = buttonList[selectedIndex]
+    if item and item.cycleFunc then
+        item.cycleFunc(1)
+        UpdateButtonVisuals()
+    end
+end
+-- Confirm now EXECUTES (Numpad 5)
+_G.MenuConfirm = function()
+    local item = buttonList[selectedIndex]
+    if item and item.execFunc then
+        pcall(item.execFunc)
+    end
+    UpdateButtonVisuals()
+end
+-- =================================================================================
+-- SECTION 6: MAIN MENU UI CONSTRUCTION
+-- =================================================================================
+-- DIMENSIONS (Doubled Size)
+local btnHeight = 90
+local spacing = 16
+local headerSpace = 160
+local footerSpace = 400
+local panelWidth = 940
+-- Button width should match panel width (small margins)
+local buttonWidth = panelWidth - 60 -- leave 30 px padding each side
+-- Helper to add buttons
+local tempButtons = {}
+local function queueButton(label, execFunc, cycleFunc, isActiveFunc, dynamicLabelFunc, isValueBtn)
+    local item = {
+        label = label,
+        execFunc = execFunc,
+        cycleFunc = cycleFunc,
+        isActive = isActiveFunc,
+        isValueBtn = isValueBtn,
+        dynamicLabelFunc = dynamicLabelFunc
+    }
+    table.insert(tempButtons, item)
+end
+-- --- 1. DEFINE BUTTONS ---
+-- GROUP 1: EXECUTE ONCE (Top)
+queueButton("Kill All NPC (Alt+5)", _G.RunKillNPC, nil, nil, nil, false)
+queueButton("Permanent Buffs", _G.RunPermanentBuffs, nil, nil, nil, false)
+queueButton("Remove Buffs", _G.RunRemoveBuffs, nil, nil, nil, false)
+queueButton("Reset Crime", function()
+    local cmds = package.loaded["hexm.client.debug.gm.gm_decorator"].gm_command_short_cuts.game
+    if cmds then pcall(cmds["$forbid_witness_wanfa"], 1) pcall(cmds["$forbid_police_wanfa"], 1) end
+end, nil, nil, nil, false)
+queueButton("Teleport Blissful Retreat", _G.RunTeleportBlissfulRetreat, nil, nil, nil, false)
+queueButton("Teleport Random", function()
+   local ok, skip = pcall(require, "hexm.client.ui.windows.gm.gm_skip_window")
+   if ok then
+        _G.GM_ROOM_INDEX = (_G.GM_ROOM_INDEX or 1) + 1
+        local rids = {7,10,11,13,16}
+        if _G.GM_ROOM_INDEX > #rids then _G.GM_ROOM_INDEX = 1 end
+        pcall(skip.gm_skip_flow_imp, rids[_G.GM_ROOM_INDEX], nil)
+   end
+end, nil, nil, nil, false)
+queueButton("Buff List Menu", _G.ToggleBuffMenu, nil, nil, nil, false)
+-- GROUP 2: TOGGLES (On/Off)
+local function makeToggle(name, varName, onFunc, offFunc)
+    local toggle = function()
+        _G[varName] = not _G[varName]
+        if _G[varName] then pcall(onFunc) else pcall(offFunc) end
+        UpdateButtonVisuals()
+    end
+    queueButton(
+        name,
+        toggle,
+        function(d) toggle() end,
+        function() return _G[varName] end,
+        function() return name .. " < " .. (_G[varName] and "ON" or "OFF") .. " >" end,
+        true
+    )
+end
+makeToggle("Godmode", "GM_GODMODE",
+    function() mp.add_buff(mp, 70063) end,
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a then a.rm_buff(70063) end
+    end)
+makeToggle("One-Hit Kill", "GM_ONEHITKILL",
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a then a.set_niubility(1) end
+    end,
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a then a.set_niubility(0) end
+    end)
+makeToggle("Inf Stamina", "GM_STAMINA",
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a then a.set_lock_res_consume(true) end
+    end,
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a then a.set_lock_res_consume(false) end
+    end)
+makeToggle("Invisibility", "GM_INVISIBLE",
+    function() mp.add_buff(mp, 108010) end,
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a then a.rm_buff(108010) end
+    end)
+-- Helper: toggle NPC AI (keeps separate from buff logic)
+local function toggle_npc_ai()
+    local gm_decorator = package.loaded["hexm.client.debug.gm.gm_decorator"]
+        or require("hexm.client.debug.gm.gm_decorator")
+    if not gm_decorator.gm_command_short_cuts or not gm_decorator.gm_command_short_cuts.game then
+        write_debug("[NPC AI] gm_decorator shortcuts not available")
+        return _G.GM_NPCAI
+    end
+    local cmds = gm_decorator.gm_command_short_cuts.game
+    if _G.GM_NPCAI then
+        -- Disable NPC AI
+        if cmds["$stop_all_npc_ai"] then pcall(cmds["$stop_all_npc_ai"], 1) end
+        if cmds["$gm_stop_ai"] then pcall(cmds["$gm_stop_ai"], 1) end
+        _G.GM_NPCAI = false
+        write_debug("[NPC AI] Disabled")
+        return false
+    else
+        -- Enable NPC AI
+        if cmds["$start_all_npc_ai"] then pcall(cmds["$start_all_npc_ai"], 1) end
+        if cmds["$gm_start_ai"] then pcall(cmds["$gm_start_ai"], 1) end
+        _G.GM_NPCAI = true
+        write_debug("[NPC AI] Enabled")
+        return true
+    end
+end
+-- NPC Dumb toggle
+makeToggle("NPC Dumb", "GM_NPCDUMB",
+    function()
+        pcall(mp.add_buff, mp, 380013)
+        pcall(toggle_npc_ai)
+    end,
+    function()
+        local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a and a.rm_buff then pcall(a.rm_buff, 380013) end
+        pcall(toggle_npc_ai)
+    end)
+-- GROUP 3: CHANGEABLE VALUES (Bottom)
+queueButton("Speed", _G.ExecuteSpeed, function(d) _G.CycleSpeed(d) end, function() return _G.SPEED_INDEX > 1 end,
+    function() return "Speed < " .. SPEED_LABELS[_G.SPEED_INDEX] .. " >" end, true)
+queueButton("Auto Loot", _G.ExecuteLoot, function(d) _G.CycleState("LOOT_STATE", d, 2) end, function() return _G.LOOT_STATE > 0 end,
+    function() return "Auto Loot < " .. STATE_LABELS[_G.LOOT_STATE] .. " >" end, true)
+queueButton("Auto Buffs", _G.ExecuteBuff, function(d) _G.CycleState("BUFF_STATE", d, 2) end, function() return _G.BUFF_STATE > 0 end,
+    function() return "Auto Buffs < " .. STATE_LABELS[_G.BUFF_STATE] .. " >" end, true)
+queueButton("Recover", _G.ExecuteRecover, function(d) _G.CycleState("RECOVER_STATE", d, 2) end, function() return _G.RECOVER_STATE > 0 end,
+    function() return "Recover < " .. STATE_LABELS[_G.RECOVER_STATE] .. " >" end, true)
+-- --- 2. CALCULATE DYNAMIC HEIGHT ---
+local contentHeight = #tempButtons * (btnHeight + spacing)
+local totalHeight = headerSpace + contentHeight + footerSpace
+-- --- 3. CREATE PANEL ---
+local panel = ccui.Layout:create()
+-- IMPORTANT: keep the panel inside screen if it's taller than screen
+local screenW, screenH = size.width, size.height
+panel:setContentSize(cc.size(panelWidth, totalHeight))
+panel:setBackGroundColorType(1)
+panel:setBackGroundColor(C_BG)
+panel:setBackGroundColorOpacity(240)
+-- Clamp position so you can actually see it
+local startX = 40
+local startY = math.max(20, screenH - totalHeight - 20)
+panel:setPosition(cc.p(startX, startY))
+scene:addChild(panel, 9999)
+_G.GM_MENU = panel
+write_debug(("UI: screen=%dx%d panel=%dx%d buttons=%d"):format(screenW, screenH, panelWidth, totalHeight, #tempButtons))
+-- Create drag area (header) to handle dragging without swallowing all touches
+local dragAreaHeight = 100
+local dragArea = ccui.Layout:create()
+dragArea:setContentSize(cc.size(panelWidth, dragAreaHeight))
+dragArea:setPosition(cc.p(0, totalHeight - dragAreaHeight))
+panel:addChild(dragArea)
+-- --- 4. CREATE HEADER ---
+local headerY = dragAreaHeight - 40
+local headerLeft = ccui.Text:create("WWM Menu v1.4", "Arial", 54)
+headerLeft:setColor(cc.c3b(255, 230, 120))
+headerLeft:enableOutline(cc.c4b(0, 255, 0, 255), 2)
+headerLeft:setAnchorPoint(cc.p(0, 1))
+dragArea:addChild(headerLeft)
+local headerRight = ccui.Text:create("", "Arial", 54)
+headerRight:setColor(cc.c3b(140, 20, 20)) -- dark red
+headerRight:setAnchorPoint(cc.p(0, 1))
+dragArea:addChild(headerRight)
+-- Center the two texts as a single combined line
+local w1 = headerLeft:getContentSize().width
+local w2 = headerRight:getContentSize().width
+local totalW = w1 + w2
+local startX = (panelWidth - totalW) / 2
+headerLeft:setPosition(cc.p(startX, headerY))
+headerRight:setPosition(cc.p(startX + w1, headerY))
+-- --- 5. CREATE BUTTONS ---
+local startY = totalHeight - headerSpace
+for i, itemData in ipairs(tempButtons) do
+    local b = ccui.Button:create()
+    b:setTitleFontSize(56)
+    b:setScale9Enabled(true)
+    b:setContentSize(cc.size(buttonWidth, btnHeight))
+    b:setColor(C_BG) -- Invisible bg
+    -- IMPORTANT: we will render our own text for ALL buttons
+    b:setTitleText("")
+    -- Position: Top Down
+    b:setAnchorPoint(cc.p(0.5, 1))
+    b:setPosition(cc.p(panelWidth / 2, startY - ((i-1) * (btnHeight + spacing))))
+    b:addTouchEventListener(function(sender, eventType)
+        if eventType == 2 then
+            if itemData.execFunc then pcall(itemData.execFunc) end
+            UpdateButtonVisuals()
+        end
+    end)
+    -- Text nodes for consistent coloring
+    local mainTextNode = nil
+    local valueTextNode = nil
+    if itemData.isValueBtn then
+        -- Main (left) part
+        mainTextNode = ccui.Text:create("", "Arial", 56)
+        mainTextNode:setAnchorPoint(cc.p(0, 0.5))
+        mainTextNode:setPosition(cc.p(30, btnHeight / 2))
+        b:addChild(mainTextNode, 1)
+        -- Value (right) part: < ... >
+        valueTextNode = ccui.Text:create("", "Arial", 56)
+        valueTextNode:setAnchorPoint(cc.p(1, 0.5))
+        valueTextNode:setPosition(cc.p(buttonWidth - 30, btnHeight / 2))
+        b:addChild(valueTextNode, 1)
+    else
+        -- Normal button: single centered text
+        mainTextNode = ccui.Text:create("", "Arial", 56)
+        mainTextNode:setAnchorPoint(cc.p(0.5, 0.5))
+        mainTextNode:setPosition(cc.p(buttonWidth / 2, btnHeight / 2))
+        b:addChild(mainTextNode, 1)
+    end
+    -- Store functionality
+    local btnObj = {
+        btn = b,
+        execFunc = itemData.execFunc,
+        cycleFunc = itemData.cycleFunc,
+        isActive = itemData.isActive,
+        -- expose nodes so SECTION 5 can color them
+        mainText = mainTextNode,
+        valueText = valueTextNode,
+        updateText = function()
+            local text = itemData.label
+            if itemData.dynamicLabelFunc then
+                text = itemData.dynamicLabelFunc()
+            elseif itemData.isActive then
+                local val = itemData.isActive()
+                text = itemData.label .. (val and " < ON >" or " < OFF >")
+            end
+            if valueTextNode then
+                -- Split into 2 parts: "Something " + "<...>"
+                local mainPart, valuePart = text:match("^(.-)%s*(<.*>)%s*$")
+                if not mainPart then
+                    mainPart = text
+                    valuePart = ""
+                end
+                mainTextNode:setString(mainPart)
+                valueTextNode:setString(valuePart)
+            else
+                -- Normal buttons: everything goes into the single main text node
+                mainTextNode:setString(text)
+            end
+        end
+    }
+    panel:addChild(b)
+    table.insert(buttonList, btnObj)
+end
+-- --- 6. CREATE FOOTER (Two Columns + background, no overflow) ---
+local dividerY = footerSpace - 50
+-- Divider line
+local div = ccui.Layout:create()
+div:setBackGroundColorType(1)
+div:setBackGroundColor(cc.c3b(255, 255, 255))
+div:setBackGroundColorOpacity(80)
+div:setContentSize(cc.size(panelWidth - 60, 4))
+div:setPosition(cc.p(30, dividerY))
+panel:addChild(div)
+-- FOOTER COLUMNS
+local FOOTER_COLOR = cc.c3b(160, 160, 160)
+local FOOTER_FONT = 34
+-- LEFT Column: Quick Hotkeys
+local leftText =
+"Quick Hotkeys:\n" ..
+"Alt+Num 1: Speed\n" ..
+"Alt+Num 2: Loot Loop\n" ..
+"Alt+Num 3: Buff Loop\n" ..
+"Alt+Num 5: Kill NPC\n" ..
+"Alt+Num 7: Recover\n" ..
+"Alt+Num 8: Buff Once\n" ..
+"Alt+Num 9: Loot Once"
+local lblLeft = ccui.Text:create(leftText, "Arial", FOOTER_FONT)
+lblLeft:setColor(FOOTER_COLOR)
+lblLeft:setAnchorPoint(cc.p(0, 1))
+lblLeft:setTextHorizontalAlignment(0)
+lblLeft:ignoreContentAdaptWithSize(false)
+lblLeft:setContentSize(cc.size((panelWidth * 0.55) - 40, dividerY - 30))
+lblLeft:setPosition(cc.p(30, dividerY - 20))
+panel:addChild(lblLeft)
+-- RIGHT Column: Navigation
+local rightText =
+"Navigation:\n" ..
+"Numpad [8/2] Up/Down\n" ..
+"Numpad [4/6] Change Val\n" ..
+"Numpad [5] Confirm\n" ..
+"Numpad[*] Close Buff List Menu"
+local lblRight = ccui.Text:create(rightText, "Arial", FOOTER_FONT)
+lblRight:setColor(FOOTER_COLOR)
+lblRight:setAnchorPoint(cc.p(0, 1))
+lblRight:setTextHorizontalAlignment(0)
+lblRight:ignoreContentAdaptWithSize(false)
+lblRight:setContentSize(cc.size((panelWidth * 0.45) - 40, dividerY - 30))
+lblRight:setPosition(cc.p(panelWidth * 0.55 + 10, dividerY - 20))
+panel:addChild(lblRight)
+-- Initialize Visuals
+UpdateButtonVisuals()
+-- =================================================================================
+-- SECTION 7: DRAGGING & MINIMIZE LOGIC (Main Menu)
+-- =================================================================================
+-- Boundary Check
+local function keepPanelInBounds(newX, newY)
+    local pSize = panel:getContentSize()
+    local minX, maxX = 0, size.width - pSize.width
+    local minY, maxY = 0, size.height - pSize.height
+    return math.max(minX, math.min(maxX, newX)), math.max(minY, math.min(maxY, newY))
+end
+-- Draggable Logic (now on dragArea)
+dragArea:setTouchEnabled(true)
+local isDragging = false
+local dragOffset = nil
+dragArea:addTouchEventListener(function(sender, eventType)
+    if eventType == 0 then
+        local tPos = sender:getTouchBeganPosition()
+        local pPos = panel:getPosition()
+        dragOffset = cc.p(tPos.x - pPos.x, tPos.y - pPos.y)
+        isDragging = true
+        return true
+    elseif eventType == 1 and isDragging then
+        local tPos = sender:getTouchMovePosition()
+        local newX, newY = keepPanelInBounds(tPos.x - dragOffset.x, tPos.y - dragOffset.y)
+        panel:setPosition(cc.p(newX, newY))
+        return true
+    elseif eventType == 2 or eventType == 3 then
+        isDragging = false
+        return true
+    end
+end)
+-- Minimize Button
+local btn_minimize = ccui.Button:create()
+btn_minimize:setTitleText("−")
+btn_minimize:setTitleFontSize(52)
+btn_minimize:setTitleColor(cc.c3b(255, 255, 120))
+btn_minimize:setPosition(cc.p(panelWidth - 130, dragAreaHeight - 50))
+dragArea:addChild(btn_minimize)
+-- Keybind Info (Floating Button when Minimized)
+local keybindInfo = ccui.Button:create()
+keybindInfo:setTitleText(" Click to Open ")
+keybindInfo:setTitleFontSize(48)
+keybindInfo:setTitleColor(cc.c3b(200,200,255))
+keybindInfo:setVisible(false)
+keybindInfo:setPosition(cc.p(panelWidth/2, 50))
+panel:addChild(keybindInfo)
+-- Minimize/Restore Logic
+local function ToggleMinimize()
+    isMinimized = not isMinimized
+    if isMinimized then
+        originalSize = panel:getContentSize()
+        panel:setContentSize(cc.size(panelWidth, 100))
+        for _, item in ipairs(buttonList) do item.btn:setVisible(false) end
+        btn_minimize:setTitleText("⬜")
+        keybindInfo:setVisible(true)
+        -- Update minimize button pos for small bar
+        btn_minimize:setPosition(cc.p(panelWidth - 130, 50))
+        -- Update dragArea pos for minimized
+        dragArea:setPosition(cc.p(0, 100 - dragAreaHeight))
+    else
+        panel:setContentSize(originalSize)
+        for _, item in ipairs(buttonList) do item.btn:setVisible(true) end
+        btn_minimize:setTitleText("−")
+        keybindInfo:setVisible(false)
+        -- Restore minimize button pos
+        btn_minimize:setPosition(cc.p(panelWidth - 130, dragAreaHeight - 50))
+        -- Restore dragArea pos
+        dragArea:setPosition(cc.p(0, totalHeight - dragAreaHeight))
+    end
+end
+btn_minimize:addTouchEventListener(function(s,e) if e == 2 then ToggleMinimize() end end)
+keybindInfo:addTouchEventListener(function(s,e) if e == 2 then ToggleMinimize() end end)
+-- Close Button
+local closeBtn = ccui.Button:create()
+closeBtn:setTitleText("X")
+closeBtn:setTitleFontSize(48)
+closeBtn:setTitleColor(cc.c3b(255, 80, 80))
+closeBtn:setPosition(cc.p(panelWidth - 50, dragAreaHeight - 50))
+closeBtn:addTouchEventListener(function(s,e)
+    if e == 2 then panel:removeFromParent(); _G.GM_MENU = nil end
+end)
+dragArea:addChild(closeBtn)
+-- Initialize Visuals
+UpdateButtonVisuals()
+write_debug("Main Menu Created. Size: " .. panelWidth .. "x" .. totalHeight)
+-- Final Success Report
+if DEBUG_FILE_ENABLED then
+    pcall(function()
+        local file = io.open(DEBUG_FILE_PATH, "a")
+        if file then
+            file:write(os.date("%H:%M:%S") .. " === SCRIPT COMPLETED SUCCESSFULLY ===\n")
+            file:close()
+        end
+    end)
+end

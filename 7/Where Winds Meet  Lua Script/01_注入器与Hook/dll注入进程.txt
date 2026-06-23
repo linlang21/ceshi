@@ -1,0 +1,214 @@
+#include <Windows.h>
+#include <vector>
+#include <string>
+#include <iostream>
+#include <thread>
+#include <MinHook.h>
+#include <mutex>
+ 
+// =================================================================================
+// String (Enhancing Security by Hiding Strings in DLLs)"
+// =================================================================================
+ 
+template <int X> struct XorStr {
+    char data[X];
+    constexpr XorStr(const char* input) : data{} {
+        for (int i = 0; i < X; ++i) data[i] = input[i] ^ (0x55 + i % 5);
+    }
+};
+ 
+#define _XOR(s) ([]() -> std::string { \
+    constexpr XorStr<sizeof(s)/sizeof(char)> x(s); \
+    std::string r; \
+    r.resize(sizeof(x.data)); \
+    for(int i=0; i<sizeof(x.data); ++i) r[i] = x.data[i] ^ (0x55 + i % 5); \
+    if (!r.empty() && r.back() == '\0') r.pop_back(); \
+    return r; \
+}())
+ 
+// =================================================================================
+// LUA PAYLOAD
+// =================================================================================
+ 
+ 
+const char* LUA_LOADER_SCRIPT = R"LUA(
+    local path = [[C:\temp\Where Winds Meet\Scripts\Test.lua]]
+    local f, err = loadfile(path)
+    if f then 
+        pcall(f) 
+    end
+)LUA";
+ 
+// =================================================================================
+// Commands and Instructions (Applying XOR Encryption for Stealth)"
+// =================================================================================
+ 
+std::string GetCmd_MenuVisible() { return _XOR("if _G.ToggleGMMenu then _G.ToggleGMMenu() elseif _G.GM_MENU then _G.GM_MENU:setVisible(not _G.GM_MENU:isVisible()) end"); }
+ 
+std::string GetCmd_NavUp() { return _XOR("if _G.MenuUp then _G.MenuUp() end"); }
+std::string GetCmd_NavDown() { return _XOR("if _G.MenuDown then _G.MenuDown() end"); }
+std::string GetCmd_NavLeft() { return _XOR("if _G.MenuLeft then _G.MenuLeft() end"); }
+std::string GetCmd_NavRight() { return _XOR("if _G.MenuRight then _G.MenuRight() end"); }
+std::string GetCmd_NavConfirm() { return _XOR("if _G.MenuConfirm then _G.MenuConfirm() end"); }
+ 
+std::string GetCmd_Speed() { return _XOR("if _G.ToggleSpeed then _G.ToggleSpeed() end"); }
+std::string GetCmd_LootLoop() { return _XOR("if _G.ToggleAutoLootLoop then _G.ToggleAutoLootLoop() end"); }
+std::string GetCmd_KillNPC() { return _XOR("if _G.RunKillNPC then _G.RunKillNPC() end"); }
+std::string GetCmd_Recover() { return _XOR("if _G.RunRecover then _G.RunRecover() end"); }
+std::string GetCmd_AutoLoot() { return _XOR("if _G.RunAutoLoot then _G.RunAutoLoot() end"); }
+ 
+// =================================================================================
+// HOOK
+// =================================================================================
+ 
+typedef int(__fastcall* tLua_Load)(void* L, void* reader, void* dt, const char* chunkname, const char* mode);
+typedef int(__fastcall* tLua_Pcall)(void* L, int nargs, int nresults, int errfunc, void* k, void* ctx);
+ 
+tLua_Load oLua_Load = nullptr;
+tLua_Pcall oLua_Pcall = nullptr;
+ 
+struct ReaderData { const char* s; size_t size; };
+const char* __fastcall MyLuaReader(void* L, void* ud, size_t* size) {
+    ReaderData* data = (ReaderData*)ud;
+    if (data->size == 0) { *size = 0; return nullptr; }
+    *size = data->size; data->size = 0; return data->s;
+}
+ 
+// Global Flags
+bool bInjectPayload = false;
+std::string cmdQueue = "";
+std::mutex mtx;
+ 
+int __fastcall hkLua_Pcall(void* L, int nargs, int nresults, int errfunc, void* k, void* ctx) {
+ 
+    // 1. Inject Menu (F3)
+    if (bInjectPayload) {
+        bInjectPayload = false;
+ 
+        ReaderData data = { LUA_LOADER_SCRIPT, strlen(LUA_LOADER_SCRIPT) };
+ 
+ 
+        if (oLua_Load(L, &MyLuaReader, &data, _XOR("@SysInit").c_str(), _XOR("t").c_str()) == 0) {
+            oLua_Pcall(L, 0, 0, 0, nullptr, nullptr);
+        }
+    }
+    // 2. Normal Commands
+    else {
+        std::string cmdToRun = "";
+ 
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (!cmdQueue.empty()) {
+                cmdToRun = cmdQueue;
+                cmdQueue = "";
+            }
+        }
+ 
+        if (!cmdToRun.empty()) {
+            ReaderData data = { cmdToRun.c_str(), cmdToRun.length() };
+            if (oLua_Load(L, &MyLuaReader, &data, _XOR("@SysCmd").c_str(), _XOR("t").c_str()) == 0) {
+                oLua_Pcall(L, 0, 0, 0, nullptr, nullptr);
+            }
+        }
+    }
+ 
+    return oLua_Pcall(L, nargs, nresults, errfunc, k, ctx);
+}
+ 
+uintptr_t PatternScan(const char* signature) {
+    auto dos = (PIMAGE_DOS_HEADER)GetModuleHandleA(NULL); // Scan module ตัวเอง (เกม)
+    if (!dos) return 0;
+    auto nt = (PIMAGE_NT_HEADERS)((std::uint8_t*)dos + dos->e_lfanew);
+    auto size = nt->OptionalHeader.SizeOfImage;
+    auto bytes = reinterpret_cast<std::uint8_t*>(dos);
+    std::vector<int> pattern;
+    const char* cur = signature;
+    while (*cur) {
+        if (*cur == ' ') { cur++; continue; }
+        if (*cur == '?') { pattern.push_back(-1); cur++; if (*cur == '?') cur++; }
+        else { pattern.push_back(strtoul(cur, (char**)&cur, 16)); }
+    }
+    for (size_t i = 0; i < size - pattern.size(); ++i) {
+        bool found = true;
+        for (size_t j = 0; j < pattern.size(); ++j) {
+            if (bytes[i + j] != pattern[j] && pattern[j] != -1) { found = false; break; }
+        }
+        if (found) return (uintptr_t)&bytes[i];
+    }
+    return 0;
+}
+ 
+void SendCommand(std::string cmd) {
+    std::lock_guard<std::mutex> lock(mtx);
+    cmdQueue = cmd;
+}
+ 
+DWORD WINAPI MainThread(LPVOID lpReserved) {
+    // Scan Signatures
+    uintptr_t load = PatternScan("48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B E9 49 8B F1");
+    if (!load) load = PatternScan("48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1 4D 8B C8 4C 8B C2 48 8D 54 24");
+    uintptr_t pcall = PatternScan("48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58 49 63 C1 41 8B E8 48 8B F9 45 85 C9");
+ 
+    if (!load || !pcall) {
+        FreeLibraryAndExitThread((HMODULE)lpReserved, 0);
+        return 0;
+    }
+ 
+    oLua_Load = (tLua_Load)load;
+    MH_Initialize();
+    MH_CreateHook((void*)pcall, &hkLua_Pcall, (void**)&oLua_Pcall);
+    MH_EnableHook(MH_ALL_HOOKS);
+ 
+    while (true) {
+        HWND foreground = GetForegroundWindow();
+        DWORD foregroundPid = 0;
+        if (foreground) GetWindowThreadProcessId(foreground, &foregroundPid);
+ 
+        if (foregroundPid == GetCurrentProcessId()) {
+ 
+            // --- 1. Main Inject Key (F3) ---
+            if (GetAsyncKeyState(VK_F3) & 1) {
+                bInjectPayload = true;
+            }
+ 
+            // --- 2. Menu Visibility (Numpad -) ---
+ 
+            if (GetAsyncKeyState(VK_SUBTRACT) & 1) SendCommand(GetCmd_MenuVisible());
+ 
+            // --- 3. Navigation ---
+            if (GetAsyncKeyState(VK_NUMPAD8) & 1) SendCommand(GetCmd_NavUp());
+            if (GetAsyncKeyState(VK_NUMPAD2) & 1) SendCommand(GetCmd_NavDown());
+            if (GetAsyncKeyState(VK_NUMPAD4) & 1) SendCommand(GetCmd_NavLeft());
+            if (GetAsyncKeyState(VK_NUMPAD6) & 1) SendCommand(GetCmd_NavRight());
+            if (GetAsyncKeyState(VK_NUMPAD5) & 1) SendCommand(GetCmd_NavConfirm());
+ 
+            // --- 4. Alt Shortcuts ---
+            if (GetAsyncKeyState(VK_MENU) & 0x8000) {
+                if (GetAsyncKeyState(VK_NUMPAD1) & 1) SendCommand(GetCmd_Speed());
+                if (GetAsyncKeyState(VK_NUMPAD2) & 1) SendCommand(GetCmd_LootLoop());
+                if (GetAsyncKeyState(VK_NUMPAD5) & 1) SendCommand(GetCmd_KillNPC());
+                if (GetAsyncKeyState(VK_NUMPAD7) & 1) SendCommand(GetCmd_Recover());
+                if (GetAsyncKeyState(VK_NUMPAD9) & 1) SendCommand(GetCmd_AutoLoot());
+            }
+ 
+            // --- 5. Unload (END Key) ---
+            if (GetAsyncKeyState(VK_END) & 1) {
+                break;
+            }
+        }
+        Sleep(50);
+    }
+ 
+    MH_DisableHook(MH_ALL_HOOKS);
+    MH_Uninitialize();
+    FreeLibraryAndExitThread((HMODULE)lpReserved, 0);
+    return 0;
+}
+ 
+BOOL WINAPI DllMain(HMODULE hMod, DWORD dwReason, LPVOID lpReserved) {
+    if (dwReason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hMod);
+        CreateThread(nullptr, 0, MainThread, hMod, 0, nullptr);
+    }
+    return TRUE;
+}

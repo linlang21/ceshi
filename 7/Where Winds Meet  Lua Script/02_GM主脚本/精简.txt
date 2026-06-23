@@ -1,0 +1,3105 @@
+-- SCRIPT START TEST 1
+print("=== SCRIPT IS RUNNING ===")
+ 
+-- =================================================================================
+-- SECTION 1: DEBUG & SETUP
+-- =================================================================================
+local DEBUG_FILE_ENABLED = true
+local DEBUG_FILE_PATH    = "C:\\temp\\Where Winds Meet\\Scripts\\script_debug.txt"
+ 
+local function write_debug(message)
+    if DEBUG_FILE_ENABLED then
+        pcall(function()
+            local file = io.open(DEBUG_FILE_PATH, "a")
+            if file then
+                file:write(os.date("%H:%M:%S") .. " " .. message .. "\n")
+                file:close()
+            end
+        end)
+    end
+    print(message)
+end
+ 
+-- Initialize Debug File
+if DEBUG_FILE_ENABLED then
+    pcall(function()
+        local file = io.open(DEBUG_FILE_PATH, "w")
+        if file then
+            file:write("=== SCRIPT DEBUG LOG ===\n")
+            file:close()
+        end
+    end)
+end
+ 
+-- Check Environment
+if not G or not G.main_player or not cc or not cc.Director then
+    write_debug("ERROR: Game environment not ready (G or cc missing)")
+    return
+end
+local mp = G.main_player
+local director = cc.Director:getInstance()
+local scene = director:getRunningScene()
+local size = director:getVisibleSize() -- Needed for dragging boundaries
+ 
+-- Remove old menu if exists
+if _G.GM_MENU then
+    _G.GM_MENU:removeFromParent()
+    _G.GM_MENU = nil
+end
+ 
+-- === Debug Flags Integration (append only, auto-apply) ===
+local FLAGS_TO_SET = {
+  DEBUG                     = false,
+  DISABLE_ACSDK             = true,   -- always true
+  ENABLE_DEBUG_PRINT        = false,
+  ENABLE_FORCE_SHOW_GM      = false,
+  FORCE_OPEN_DEBUG_SHORTCUT = false,
+  GM_IS_OPEN_GUIDE          = false,
+  GM_USE_PUBLISH            = false,
+  acsdk_info_has_inited     = false,  -- always false
+}
+ 
+local MAX_DEPTH = 10
+-- Default to _G to avoid mutating package.loaded unless explicitly desired
+local ROOT = rawget(_G, "DUMP_ROOT") or _G
+local ROOT_NAME = rawget(_G, "DUMP_ROOT_NAME") or "ROOT"
+local visited = setmetatable({}, { __mode = "k" })
+ 
+-- Safe single-line logger (ensures each write is atomic and newline-terminated)
+local function safe_log(msg)
+  if not DEBUG_FILE_ENABLED then return end
+  pcall(function()
+    local f = io.open(DEBUG_FILE_PATH, "a")
+    if not f then return end
+    f:write(os.date("%H:%M:%S") .. " " .. tostring(msg) .. "\n")
+    f:close()
+  end)
+end
+ 
+local function modify_flags(tbl, path, depth)
+  if depth >= MAX_DEPTH or visited[tbl] then return end
+  visited[tbl] = true
+ 
+  for k, v in next, tbl do
+    -- only consider string keys for flag matching
+    if type(k) == "string" and FLAGS_TO_SET[k] ~= nil then
+      -- attempt to set the flag safely; rawset rarely errors but wrap in pcall to be defensive
+      local ok, err = pcall(function() rawset(tbl, k, FLAGS_TO_SET[k]) end)
+      if ok then
+        safe_log(string.format("[✔] %s%s set to %s", path, k, tostring(FLAGS_TO_SET[k])))
+      else
+        safe_log(string.format("[✖] Failed to set %s%s: %s", path, k, tostring(err)))
+      end
+    end
+ 
+    -- only recurse into actual tables (avoid userdata/metatables)
+    if type(v) == "table" then
+      -- build a readable path; only append string keys
+      local nextPath = path
+      if type(k) == "string" then
+        nextPath = path .. k .. "."
+      else
+        nextPath = path .. "[" .. tostring(k) .. "]."
+      end
+      modify_flags(v, nextPath, depth + 1)
+    end
+  end
+end
+ 
+-- Apply flags once at startup (wrapped in pcall to avoid runtime errors)
+pcall(function() modify_flags(ROOT, ROOT_NAME .. ".", 0) end)
+ 
+-- TELEPORT BLACKLIST HANDLER
+local TELEPORT_BLACKLIST_PATH = "C:\\temp\\Where Winds Meet\\Scripts\\teleport_blacklist.txt"
+_G.TELEPORT_BLACKLIST = _G.TELEPORT_BLACKLIST or {} -- lookup table: id -> true
+ 
+local function parse_ids_from_braced_list(s)
+    local start_brace = s:find("{", 1, true)
+    local end_brace = s:find("}", 1, true)
+    if not start_brace or not end_brace then return {} end
+    local inner = s:sub(start_brace + 1, end_brace - 1)
+    local ids = {}
+    for token in inner:gmatch("[^,]+") do
+        local num = tonumber((token:gsub("%s+", "")))
+        if num then table.insert(ids, num) end
+    end
+    return ids
+end
+ 
+-- writer: always writes a braced-only list
+local function write_teleport_blacklist_file(line_or_ids)
+    pcall(function()
+        local f = io.open(TELEPORT_BLACKLIST_PATH, "w")
+        if not f then return end
+ 
+        local out = nil
+        if type(line_or_ids) == "table" then
+            out = "{" .. table.concat(line_or_ids, ",") .. "}"
+        elseif type(line_or_ids) == "string" then
+            local start_brace = line_or_ids:find("{", 1, true)
+            local end_brace = line_or_ids:find("}", 1, true)
+            if start_brace and end_brace then
+                out = line_or_ids:sub(start_brace, end_brace)
+            else
+                local ids = {}
+                for token in line_or_ids:gmatch("%d+") do
+                    table.insert(ids, tonumber(token))
+                end
+                out = "{" .. table.concat(ids, ",") .. "}"
+            end
+        else
+            out = "{}"
+        end
+ 
+        f:write(out .. "\n")
+        f:close()
+    end)
+end
+ 
+local function load_teleport_blacklist_from_debug()
+    -- Read debug file
+    local ok, content = pcall(function()
+        local f = io.open(DEBUG_FILE_PATH, "r")
+        if not f then return nil end
+        local data = f:read("*a")
+        f:close()
+        return data
+    end)
+    if not ok or not content then return end
+ 
+    local last_line = nil
+    for line in content:gmatch("[^\r\n]+") do
+        if line:find("Suggested blacklist:", 1, true) or line:find("Suggested blacklist: {", 1, true) then
+            last_line = line
+        end
+    end
+ 
+    if not last_line then return end
+ 
+    -- parse ids and populate lookup
+    local ids = parse_ids_from_braced_list(last_line)
+    local new_lookup = {}
+    for _, id in ipairs(ids) do new_lookup[id] = true end
+    _G.TELEPORT_BLACKLIST = new_lookup
+ 
+    -- write out the normalized blacklist file for persistence
+    write_teleport_blacklist_file(ids)
+    write_debug("[✔] Teleport Blacklist: Loaded " .. tostring(#ids) .. " ids from debug and wrote to " .. TELEPORT_BLACKLIST_PATH)
+end
+ 
+-- Try to load existing teleport_blacklist.txt on startup (if present) and normalize it
+pcall(function()
+    local f = io.open(TELEPORT_BLACKLIST_PATH, "r")
+    if f then
+        local content = f:read("*a")
+        f:close()
+        if content and content:find("{", 1, true) then
+            local ids = parse_ids_from_braced_list(content)
+            local lookup = {}
+            for _, id in ipairs(ids) do lookup[id] = true end
+            _G.TELEPORT_BLACKLIST = lookup
+            -- ensure file is normalized to braced-only format
+            write_teleport_blacklist_file(ids)
+            write_debug("[✔] Teleport Blacklist: Loaded " .. tostring(#ids) .. " ids from " .. TELEPORT_BLACKLIST_PATH)
+        end
+    end
+end)
+ 
+pcall(load_teleport_blacklist_from_debug)
+ 
+-- Debounced safe invoker for random teleport button
+_G._TELEPORT_DEBOUNCE = _G._TELEPORT_DEBOUNCE or false
+ 
+local function SafeRunTeleportRandom(start_id, end_id, blacklist)
+    if _G._TELEPORT_DEBOUNCE then
+        write_debug("[Teleport] Ignored: debounce active")
+        return false
+    end
+    _G._TELEPORT_DEBOUNCE = true
+ 
+    pcall(function()
+        local director = cc.Director:getInstance()
+        local scheduler = director and director:getScheduler()
+        if scheduler and scheduler.scheduleScriptFunc then
+            local id
+            id = scheduler:scheduleScriptFunc(function()
+                scheduler:unscheduleScriptEntry(id)
+                _G._TELEPORT_DEBOUNCE = false
+            end, 0.5, false)
+        else
+            _G._TELEPORT_DEBOUNCE = false
+        end
+    end)
+ 
+    -- refresh blacklist from debug file if any new suggestions exist
+    pcall(load_teleport_blacklist_from_debug)
+ 
+    -- build blacklist array from provided param or global lookup
+    local final_blacklist = {}
+    if type(blacklist) == "table" then
+        for _, v in ipairs(blacklist) do final_blacklist[#final_blacklist+1] = v end
+    end
+    -- append global teleport blacklist keys
+    for id, _ in pairs(_G.TELEPORT_BLACKLIST or {}) do
+        final_blacklist[#final_blacklist+1] = id
+    end
+ 
+    -- Ensure random seed (only once is fine)
+    math.randomseed(os.time() + (os.clock() * 1000))
+ 
+    -- Use explicit start/end variables
+    local s = tonumber(start_id) or 1 -- START ID ( YOU CAN CHANGE THIS )
+    local e = tonumber(end_id) or 999999 -- END ID  ( YOU CAN CHANGE THIS )
+ 
+    -- First attempt: try the random-range implementation
+    local ok, res = pcall(function()
+        return _G.RunTeleportRandom_impl(s, e, final_blacklist)
+    end)
+ 
+    if ok and res then
+        return res
+    end
+ 
+    -- If the random-range attempt failed, fallback to picking one valid id from teleport_validList.txt
+    -- Read teleport_validList.txt (support braced list or newline ids)
+    local valid_ids = {}
+    pcall(function()
+        local vf = io.open("C:\\temp\\Where Winds Meet\\Scripts\\Teleport_validList.txt", "r")
+        if vf then
+            local data = vf:read("*a")
+            vf:close()
+            if data then
+                -- try braced list first
+                local parsed = parse_ids_from_braced_list(data)
+                if #parsed > 0 then
+                    valid_ids = parsed
+                else
+                    -- fallback: collect all numbers in file
+                    for token in data:gmatch("%d+") do
+                        table.insert(valid_ids, tonumber(token))
+                    end
+                end
+            end
+        end
+    end)
+ 
+    -- pick one valid id not in blacklist
+    local chosen = nil
+    if #valid_ids > 0 then
+        -- shuffle or random pick until find not blacklisted
+        for i = 1, #valid_ids do
+            local idx = math.random(1, #valid_ids)
+            local cand = valid_ids[idx]
+            if not _G.TELEPORT_BLACKLIST or not _G.TELEPORT_BLACKLIST[cand] then
+                chosen = cand
+                break
+            end
+        end
+    end
+ 
+    if chosen then
+        local ok2, res2 = pcall(function()
+            -- teleport to single id by calling the range impl with start=end=chosen
+            return _G.RunTeleportRandom_impl(chosen, chosen, final_blacklist)
+        end)
+        if ok2 and res2 then
+            write_debug("[Teleport] Fallback: teleported to valid id " .. tostring(chosen))
+            return res2
+        else
+            write_debug("[Teleport] Fallback teleport failed for id " .. tostring(chosen) .. " : " .. tostring(res2))
+            _G._TELEPORT_DEBOUNCE = false
+            return false
+        end
+    end
+ 
+    -- nothing worked
+    write_debug("[Teleport] Error during SafeRunTeleportRandom: " .. tostring(res))
+    _G._TELEPORT_DEBOUNCE = false
+    return false
+end
+ 
+_G.SafeRunTeleportRandom = SafeRunTeleportRandom
+ 
+-- BUFF CONFIG LOADER (supports AUTO/PERMANENT/REMOVE lists and table-entry lines)
+local BUFF_CONFIG_PATH = "C:\\temp\\Where Winds Meet\\Scripts\\buff_config.txt"
+ 
+-- parse braced ids
+local function parse_braced_ids(s)
+    if not s then return {} end
+    local start_brace = s:find("{", 1, true)
+    local end_brace = s:find("}", 1, true)
+    if not start_brace or not end_brace then return {} end
+    local inner = s:sub(start_brace + 1, end_brace - 1)
+    local ids = {}
+    for token in inner:gmatch("[^,]+") do
+        local num = tonumber((token:gsub("%s+", "")))
+        if num then table.insert(ids, num) end
+    end
+    return ids
+end
+ 
+-- parse a single table-entry line like:
+-- { id = 30302, note = "increase damage", auto = true, perm = true, remove = true },
+local function parse_table_entry(line)
+    if not line then return nil end
+    local id = line:match("id%s*=%s*([%d]+)")
+    if id then id = tonumber(id) end
+    if not id then return nil end
+ 
+    local function flag_for(name)
+        local pat = name .. "%s*=%s*([%w]+)"
+        local v = line:match(pat)
+        if not v then return false end
+        v = v:lower()
+        return (v == "true" or v == "1")
+    end
+ 
+    local entry = {
+        id = id,
+        note = line:match("note%s*=%s*\"([^\"]*)\"") or line:match("note%s*=%s*'([^']*)'") or "",
+        auto = flag_for("auto"),
+        perm = flag_for("perm") or flag_for("perm") == nil and flag_for("permanent"),
+        remove = flag_for("remove")
+    }
+    return entry
+end
+ 
+local function load_buff_config()
+    write_debug("[BuffConfig] Attempting to read from: " .. BUFF_CONFIG_PATH)
+    local ok, content = pcall(function()
+        local f = io.open(BUFF_CONFIG_PATH, "r")
+        if not f then 
+            return nil 
+        end
+        local data = f:read("*a")
+        f:close()
+        return data
+    end)
+    
+    if not ok or not content or content == "" then
+        write_debug("[BuffConfig] Warning: Could not read " .. BUFF_CONFIG_PATH .. " or file is empty")
+        return { auto = {}, permanent = {}, remove = {}, note_map = {} }
+    end
+ 
+    write_debug("[BuffConfig] Successfully read content, length: " .. #content)
+ 
+    local auto_map = {}
+    local perm_map = {}
+    local remove_map = {}
+    local note_map = {}
+ 
+    -- first pass: named braced lists (AUTO, PERMANENT, REMOVE)
+    for line in content:gmatch("[^\r\n]+") do
+        local code_line = line:gsub("%-%-.*$", "") -- strip comments
+        code_line = code_line:match("^%s*(.-)%s*$") or ""
+        local label, rest = code_line:match("^%s*([A-Za-z_]+)%s*[:=]%s*(%b{})")
+        if label and rest then
+            local ids = parse_braced_ids(rest)
+            local up = string.upper(label)
+            for _, id in ipairs(ids) do
+                if type(id) == "number" then
+                    if up == "AUTO" then auto_map[id] = true
+                    elseif up == "PERMANENT" then perm_map[id] = true
+                    elseif up == "REMOVE" then remove_map[id] = true
+                    end
+                end
+            end
+        end
+    end
+ 
+    -- second pass: table-entry lines like { id = 30302, note = "...", auto = true, perm = true, remove = true },
+    for line in content:gmatch("[^\r\n]+") do
+        local code_line = line:gsub("%-%-.*$", "") -- strip comments
+        code_line = code_line:match("^%s*(.-)%s*$") or ""
+        if code_line:match("^%s*%b{}%s*,?%s*$") then
+            local entry = parse_table_entry(code_line)
+            if entry and entry.id then
+                if entry.auto then auto_map[entry.id] = true end
+                if entry.perm then perm_map[entry.id] = true end
+                if entry.remove then remove_map[entry.id] = true end
+                if entry.note and entry.note ~= "" then note_map[entry.id] = entry.note end
+            end
+        end
+    end
+ 
+    -- also capture notes from any explicit named lists? (no notes there)
+    -- fallback: if BUFF_LIST exists in memory, capture notes from it too
+    if type(BUFF_LIST) == "table" then
+        for _, e in ipairs(BUFF_LIST) do
+            if e and e.id and e.note and e.note ~= "" then
+                note_map[e.id] = note_map[e.id] or e.note
+            end
+        end
+    end
+ 
+    local function map_to_sorted_array(m)
+        local arr = {}
+        for id, _ in pairs(m) do table.insert(arr, id) end
+        table.sort(arr)
+        return arr
+    end
+ 
+    local auto_ids = map_to_sorted_array(auto_map)
+    local perm_ids = map_to_sorted_array(perm_map)
+    local remove_ids = map_to_sorted_array(remove_map)
+ 
+    write_debug(string.format("[BuffConfig] Loaded AUTO=%d PERMANENT=%d REMOVE=%d from %s",
+        #auto_ids, #perm_ids, #remove_ids, BUFF_CONFIG_PATH))
+ 
+    return { auto = auto_ids, permanent = perm_ids, remove = remove_ids, note_map = note_map }
+end
+ 
+-- cache mechanism
+local _BUFF_CONFIG_CACHE = { mtime = 0, data = nil }
+ 
+local function get_buff_config()
+    local current_mtime = 0
+    -- Try to find lfs in global scope or require it
+    local lfs = _G.lfs or (package and package.loaded and package.loaded.lfs)
+    
+    if lfs and type(lfs.attributes) == "function" then
+        local ok_attr, attr = pcall(lfs.attributes, BUFF_CONFIG_PATH)
+        if ok_attr and attr and attr.modification then
+            current_mtime = attr.modification
+        end
+    end
+ 
+    -- If we have cached data and mtime hasn't changed (or we couldn't get mtime), return cache
+    if _BUFF_CONFIG_CACHE.data and (current_mtime == 0 or current_mtime == _BUFF_CONFIG_CACHE.mtime) then
+        return _BUFF_CONFIG_CACHE.data
+    end
+ 
+    -- Otherwise, reload and update cache
+    _BUFF_CONFIG_CACHE.data = load_buff_config()
+    _BUFF_CONFIG_CACHE.mtime = current_mtime
+    return _BUFF_CONFIG_CACHE.data or { auto = {}, permanent = {}, remove = {}, note_map = {} }
+end
+ 
+-- helper to get a note for a buff id (from config note_map or BUFF_LIST fallback)
+local function get_buff_note(id)
+    if not id then return "" end
+    local cfg = nil
+    pcall(function() cfg = get_buff_config() end)
+    if cfg and cfg.note_map and cfg.note_map[id] then
+        return tostring(cfg.note_map[id])
+    end
+    if type(BUFF_LIST) == "table" then
+        for _, e in ipairs(BUFF_LIST) do
+            if e and e.id == id and e.note and e.note ~= "" then
+                return tostring(e.note)
+            end
+        end
+    end
+    return ""
+end
+ 
+-- buff list log quote helper
+local function quote_note_for_log(note)
+    if not note or note == "" then return " " end
+    local safe = tostring(note):gsub('"', '\\"')
+    return string.format('("%s")', safe)
+end
+ 
+-- =================================================================================
+-- SECTION 2: GLOBAL LOGIC FUNCTIONS (THE BRAIN)
+-- =================================================================================
+ 
+-- 1. VISUAL SYNC (This connects Hotkeys to the Menu UI)
+_G.ForceUpdateVisuals = function() end -- Forward declaration
+_G.ForceUpdateVisuals = _G.ForceUpdateVisuals or function() end -- Ensure debug helper exists
+ 
+-- Ensure global flags exist
+_G.GM_GODMODE   = _G.GM_GODMODE or false
+_G.GM_ONEHITKILL = _G.GM_ONEHITKILL or false
+_G.GM_STAMINA   = _G.GM_STAMINA or false
+_G.GM_INVISIBLE = _G.GM_INVISIBLE or false
+_G.GM_NPCAI     = _G.GM_NPCAI or true   -- true = NPC AI enabled (smart)
+_G.GM_NPCDUMB   = _G.GM_NPCDUMB or false -- true = NPCs dumb (buff applied)
+ 
+-- import wrapper (falls back to package.loaded)
+local function try_import(modname)
+    local ok, mod = pcall(portable.import, modname)
+    if ok and mod then return mod end
+    -- check package.loaded table
+    ok, mod = pcall(function() return package.loadedname] end)
+    if ok and mod then return mod end
+    -- try require as last resort (pcall to avoid errors)
+    ok, mod = pcall(require, modname)
+    if ok and mod then return mod end
+ 
+    return nil
+end
+ 
+-- 2. Godmode
+function _G.GM_EnableGodmode()
+    local mp_local = G and G.main_player
+    if mp_local and mp_local.add_buff then
+        pcall(mp_local.add_buff, mp_local, 70063)
+    end
+    _G.GM_GODMODE = true
+    write_debug("[God] [✔] God mode enabled")
+    return true
+end
+ 
+function _G.GM_DisableGodmode()
+    local a = try_import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+    if a and a.rm_buff then pcall(a.rm_buff, 70063) end
+    _G.GM_GODMODE = false
+    write_debug("[God] [✔] God mode disabled")
+    return false
+end
+ 
+function _G.GM_ToggleGodmode()
+    if _G.GM_GODMODE then return _G.GM_DisableGodmode() else return _G.GM_EnableGodmode() end
+end
+ 
+-- 3. One-Hit Kill
+function _G.GM_EnableOneHit()
+    local a = try_import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+    if a and a.set_niubility then pcall(a.set_niubility, 1) end
+    _G.GM_ONEHITKILL = true
+    write_debug("[OneHit] Enabled")
+    return true
+end
+ 
+function _G.GM_DisableOneHit()
+    local a = try_import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+    if a and a.set_niubility then pcall(a.set_niubility, 0) end
+    _G.GM_ONEHITKILL = false
+    write_debug("[OneHit] Disabled")
+    return false
+end
+ 
+-- 4. Infinite Stamina
+function _G.GM_EnableStamina()
+    local a = try_import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+    if a and a.set_lock_res_consume then pcall(a.set_lock_res_consume, true) end
+    _G.GM_STAMINA = true
+    write_debug("[Stamina] Enabled")
+    return true
+end
+ 
+function _G.GM_DisableStamina()
+    local a = try_import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+    if a and a.set_lock_res_consume then pcall(a.set_lock_res_consume, false) end
+    _G.GM_STAMINA = false
+    write_debug("[Stamina] Disabled")
+    return false
+end
+ 
+-- 5. Invisibility
+_G.INVIS_STATE = _G.INVIS_STATE or 0
+ 
+function _G.GM_EnableInvisibility()
+    local mp_local = G and G.main_player
+    if mp_local and mp_local.add_buff then pcall(mp_local.add_buff, mp_local, 108010) end
+    _G.GM_INVISIBLE = true
+    write_debug("[Invisible] [✔] Invisibility enabled")
+    return true
+end
+ 
+function _G.GM_DisableInvisibility()
+    local a = try_import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+    if a and a.rm_buff then pcall(a.rm_buff, 108010) end
+    _G.GM_INVISIBLE = false
+    write_debug("[Invisible] [✔] Invisibility disabled")
+    return false
+end
+ 
+-- RunInvisibility
+_G.RunInvisibility = function()
+    local mp = G and G.main_player
+    if not mp then
+        write_debug("[Invisibility] ERROR: main player not found")
+        return false
+    end
+ 
+    local state = tonumber(_G.INVIS_STATE) or 0
+ 
+    -- OFF: ensure buff removed and visuals updated if needed
+    if state == 0 then
+        if _G.GM_INVISIBLE then
+            pcall(_G.GM_DisableInvisibility)
+            pcall(_G.ForceUpdateVisuals)
+        end
+        return false
+    end
+ 
+    -- ONCE: apply invisibility once, then clear state
+    if state == 1 then
+        local ok = pcall(function() _G.GM_EnableInvisibility() end)
+        if ok then
+            pcall(_G.ForceUpdateVisuals)
+            write_debug("[Invisibility] Applied ONCE (state=1)")
+            -- clear the one-shot state so it doesn't reapply next cycle
+            _G.INVIS_STATE = 0
+            return true
+        else
+            write_debug("[Invisibility] Failed to apply ONCE")
+            return false
+        end
+    end
+ 
+    -- LOOP: ensure buff is applied each cycle
+    if state == 2 then
+        local ok = pcall(function() _G.GM_EnableInvisibility() end)
+        if ok then
+            pcall(_G.ForceUpdateVisuals)
+            write_debug("[Invisibility] Ensured LOOP invisibility (state=2)")
+            return true
+        else
+            write_debug("[Invisibility] Failed to ensure LOOP invisibility")
+            return false
+        end
+    end
+ 
+    -- Fallback for unexpected values: treat as OFF
+    if _G.GM_INVISIBLE then
+        pcall(_G.GM_DisableInvisibility)
+        pcall(_G.ForceUpdateVisuals)
+    end
+    return false
+end
+ 
+-- Execute: safe wrapper to run invisibility logic
+_G.ExecuteInvisibility = function()
+    -- ensure numeric state
+    local s = tonumber(_G.INVIS_STATE) or 0
+    if s > 0 then
+        return pcall(_G.RunInvisibility)
+    else
+        if _G.GM_INVISIBLE then
+            pcall(_G.GM_DisableInvisibility)
+            pcall(_G.ForceUpdateVisuals)
+        end
+        return false
+    end
+end
+ 
+-- 6. NPC DUMB
+_G.GM_NPCDUMB = _G.GM_NPCDUMB or false  -- false = NPCs (AI enabled)
+ 
+function _G.GM_EnableNPCDUMB()
+    _G.GM_NPCDUMB = true
+ 
+    local applied = false
+    pcall(function()
+        -- try to add buff via main player
+        if G and G.main_player and G.main_player.add_buff then
+            applied = pcall(G.main_player.add_buff, G.main_player, 380013)
+        end
+ 
+        -- call toggle_npc_ai if present
+        if type(toggle_npc_ai) == "function" then
+            pcall(toggle_npc_ai)
+        end
+    end)
+ 
+    write_debug("[NPC DUMB] [✔] NPC DUMB enabled (initial add: " .. tostring(applied) .. ")")
+    return true
+end
+ 
+function _G.GM_DisableNPCDUMB()
+    _G.GM_NPCDUMB = false
+ 
+    local removed = false
+    pcall(function()
+        -- try module removal first 
+        local a = portable and portable.import and portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        if a and a.rm_buff then
+            pcall(a.rm_buff, 380013)
+            removed = true
+        end
+ 
+        -- fallback to main player removal method
+        if G and G.main_player then
+            if G.main_player.remove_buff then pcall(G.main_player.remove_buff, G.main_player, 380013); removed = true end
+            if G.main_player.rm_buff then pcall(G.main_player.rm_buff, G.main_player, 380013); removed = true end
+        end
+ 
+        -- call toggle_npc_ai if present
+        if type(toggle_npc_ai) == "function" then
+            pcall(toggle_npc_ai)
+        end
+    end)
+ 
+    write_debug("[NPC DUMB] [✔] NPC DUMB disabled (buff removed: " .. tostring(removed) .. ")")
+    return false
+end 
+ 
+-- Backwards-compatible aliases
+_G.GM_EnableGod = _G.GM_EnableGodmode
+_G.GM_DisableGod = _G.GM_DisableGodmode
+ 
+_G.GM_EnableNPCAI = function()
+    return _G.GM_DisableNPCDUMB()
+end
+ 
+_G.GM_DisableNPCAI = function()
+    return _G.GM_EnableNPCDUMB()
+end
+ 
+_G.GM_ToggleNPCAI = function()
+    if _G.GM_NPCDUMB then
+        return _G.GM_DisableNPCDUMB() -- currently dumb -> make smart
+    else
+        return _G.GM_EnableNPCDUMB()  -- currently smart -> make dumb
+    end
+end
+ 
+-- 7. RECOVER
+_G.RunRecover = function()
+    local function main()
+        local mp_local = G and G.main_player
+        if not mp_local then
+            write_debug("[Recover] ERROR: Main player not found")
+            return
+        end
+ 
+        local mod = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+        local action = nil
+        pcall(function() action = portable.import(mod) end)
+ 
+        if not action then
+            write_debug("[Recover] Module "..mod.." not found, using buff fallback")
+            -- Fallback: apply recovery buff directly
+            pcall(mp_local.add_buff, mp_local, 70141) -- recover buff
+            pcall(mp_local.add_buff, mp_local, 70063) -- stamina/full recovery buff
+        else
+            -- use combat action
+            pcall(function() action.recover_hp(1) end)               -- recover HP
+            pcall(function() action.fullfill_all_combat_res(1) end) -- fill stamina
+			pcall(function() action.fulfill_all_combat_res(1) end) -- fill stamina
+            write_debug("[Recover] Recovery applied via combat action")
+        end
+    end
+ 
+    pcall(main)
+end
+ 
+-- 8. KILL NPC 
+_G.RunKillNPC = function()
+    write_debug("[KillNPC] Triggered")
+    local count = 0
+    local combat_action = nil
+    pcall(function() combat_action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action') end)
+ 
+    if combat_action then
+        pcall(function() combat_action.set_npc_mortal(true) end)
+        pcall(function() combat_action.kill_all_npc() end)
+    end
+ 
+    -- Boss Damage Logic (Restored from old file)
+    pcall(function()
+        local target_id = mp:get_lock_target_id()
+        if target_id then
+            local target = G.space:get_entity(target_id)
+            if target then
+                pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+                pcall(function() target:attr_set_HP(0, mp.entity_id, true, false) end)
+                pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+                count = count + 1
+            end
+        end
+    end)
+ 
+    -- Area Cleanup Loop
+    pcall(function()
+        local all = MEntityManager:GetAOIEntities()
+        for i = 1, #all do
+            local ent = all[i]
+            local ok, name = pcall(function() return ent:GetName() end)
+            if ok and name and (name:find('AiAvatar') or name:find('Npc') or name:find('Boss')) then
+                local ok2, eid = pcall(function() return ent.entity_id end)
+                if ok2 and eid then
+                    local target = G.space:get_entity(eid)
+                    if target and target ~= mp then
+                        pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+                        pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end)
+    write_debug("[KillNPC] Killed entities: " .. count)
+end
+ 
+ 
+-- 9. AUTO LOOT
+_G.RunAutoLoot = function()
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[AutoLoot] ERROR: main player not found")
+        return
+    end
+ 
+    local interact_misc = nil
+    pcall(function() interact_misc = portable.import('hexm.common.misc.interact_misc') end)
+ 
+    -- 1) Collections
+    pcall(function() mp_local:ride_skill_collect_nearby_collections(5000) end)
+ 
+    -- 2) Rewards
+    pcall(function()
+        local rewards = mp_local:ride_skill_find_nearest_kill_reward(5000)
+        if rewards then
+            pcall(function() mp_local:ride_skill_get_kill_reward(rewards) end)
+        end
+    end)
+ 
+    -- 3) Drops
+    pcall(function()
+        local drops = DropManager.get_nearby_drop_entities(5000)
+        if drops then
+            for _, eid in ipairs(drops) do
+                pcall(function() mp_local:pick_drop_item(eid) end)
+                pcall(function() mp_local:pick_reward_item(eid) end)
+            end
+        end
+    end)
+ 
+    -- 4) attempt at filtering
+    local ok_pos, playerPos = pcall(function() return mp_local:get_position() end)
+    if not ok_pos or not playerPos then playerPos = {x=0,y=0,z=0} end
+ 
+    local entities = MEntityManager:GetAOIEntities() or {}
+    local targets = {}
+ 
+    -- Name patterns to ignore (case-insensitive)
+    local IGNORE_NAME_PATTERNS = {
+        "lockpick", "lock pick", "elevator", "elev", "mini", "minigame", "mini-game",
+        "puzzle", "chess", "rhythm", "pitch", "pitch pot", "slot", "gacha",
+        "lockpicking", "lever", "lock picking", "picking", "sit", "feed", "use", "dye",
+		"mixing", "vat", "dye vat mixing", "sit", "sit down", "sitdown", "down"
+    }
+ 
+    -- Status/config IDs to ignore (populate with IDs you want to blacklist)
+    local IGNORE_STATUS_IDS = {
+        -- [12345] = true, -- example: add known status_no values to skip
+    }
+    local IGNORE_CONFIG_IDS = {
+        -- [54321] = true, -- example: add known config_no values to skip
+    }
+ 
+    local function name_matches_ignore(name)
+        if not name then return false end
+        local lname = string.lower(name)
+        for _, pat in ipairs(IGNORE_NAME_PATTERNS) do
+            if lname:find(pat, 1, true) then
+                return true
+            end
+        end
+        return false
+    end
+ 
+    for i = 1, #entities do
+        local ent = entities[i]
+        local ok, name = pcall(function() return ent:GetName() end)
+        if ok and name and name:find('InteractComEntity') then
+            -- Quick name-based filter
+            if name_matches_ignore(name) then
+                write_debug("[AutoLoot] Skipping by name: " .. tostring(name))
+            else
+                local ok2, eno = pcall(function() return ent:GetEntityNo() end)
+                local ok3, eid = pcall(function() return ent.entity_id end)
+                if ok2 and ok3 and eid then
+                    local luaEnt = G.space and G.space:get_entity(eid)
+                    if luaEnt then
+                        local ok4, comp = pcall(function() return luaEnt:get_interact_comp(eid) end)
+                        if ok4 and comp and comp.position then
+                            -- Component-based filter: check status/config IDs
+                            local skip = false
+ 
+                            -- check status_no (could be single or table)
+                            if comp.status_no then
+                                if type(comp.status_no) == "table" then
+                                    for _, sid in ipairs(comp.status_no) do
+                                        if IGNORE_STATUS_IDS[sid] then skip = true; break end
+                                    end
+                                else
+                                    if IGNORE_STATUS_IDS[comp.status_no] then skip = true end
+                                end
+                            end
+ 
+                            -- check config_no (could be single or table)
+                            if not skip and comp.config_no then
+                                if type(comp.config_no) == "table" then
+                                    for _, cid in ipairs(comp.config_no) do
+                                        if IGNORE_CONFIG_IDS[cid] then skip = true; break end
+                                    end
+                                else
+                                    if IGNORE_CONFIG_IDS[comp.config_no] then skip = true end
+                                end
+                            end
+ 
+                            if skip then
+                                write_debug(string.format("[AutoLoot] Skipping entity id=%s due to blacklisted comp id", tostring(eid)))
+                            else
+                                local dx = playerPos.x - comp.position[1]
+                                local dy = playerPos.y - comp.position[2]
+                                local dz = playerPos.z - comp.position[3]
+                                local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+ 
+                                -- determine priority by entity name (prefer earlier 'name' if available)
+                                local ent_name = nil
+                                if name and type(name) == "string" then
+                                    ent_name = name
+                                else
+                                    local okn, n2 = pcall(function() return ent:GetName() end)
+                                    if okn and type(n2) == "string" then ent_name = n2 end
+                                end
+ 
+                                local priority = 1
+                                if ent_name and ent_name:find("ins_entity", 1, true) then
+                                    priority = 0
+                                end
+ 
+                                table.insert(targets, {
+                                    entity_no = eno,
+                                    entity_id = eid,
+                                    luaEnt = luaEnt,
+                                    comp = comp,
+                                    distance = dist,
+                                    priority = priority
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+ 
+    table.sort(targets, function(a, b)
+        if a.priority ~= b.priority then return a.priority < b.priority end
+        return a.distance < b.distance
+    end)
+ 
+    for i = 1, #targets do
+        local t = targets[i]
+        local ways = {}
+        local seen = {}
+ 
+        if interact_misc then
+            local ok_ways, possible = pcall(function()
+                return interact_misc.get_all_possible_active_ways(t.entity_no)
+            end)
+            if ok_ways and possible then
+                for _, w in ipairs(possible) do
+                    if not seen[w] then seen[w] = true; table.insert(ways, w) end
+                end
+            end
+        end
+ 
+        local comp_id = nil
+        if t.comp and t.comp.components then
+            for cid, comp_data in pairs(t.comp.components) do
+                comp_id = cid
+                if comp_data.status_no and not seen[comp_data.status_no] then
+                    seen[comp_data.status_no] = true
+                    table.insert(ways, comp_data.status_no)
+                end
+                if comp_data.config_no and not seen[comp_data.config_no] then
+                    seen[comp_data.config_no] = true
+                    table.insert(ways, comp_data.config_no)
+                end
+            end
+        end
+ 
+        if #ways > 0 then
+            pcall(function() mp_local:set_interact_target_id(t.entity_id) end)
+            for _, way in ipairs(ways) do
+                pcall(function()
+                    mp_local:trigger_active_interact(way, t.entity_id, nil, nil, comp_id)
+                end)
+            end
+            pcall(function() mp_local:trigger_active_interact() end)
+        end
+    end
+ 
+    write_debug("[AutoLoot] Completed run")
+end
+ 
+-- 10. SPEED LOGIC 
+local function apply_new_gm_speed(speed)
+    local mod = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+    local action = nil
+    pcall(function() action = portable.import(mod) end)
+    if action and action.set_game_speed then
+        pcall(action.set_game_speed, speed)
+        return true
+    end
+    return false
+end
+ 
+local function apply_old_dialog_speed(speed, enable)
+    if G then
+        if G.dialog_global_time_scale ~= nil then G.dialog_global_time_scale = speed end
+        if G.space then
+            local space = G.space
+            if space.dialog_global_time_scale ~= nil then space.dialog_global_time_scale = speed end
+            if space.dialog_set_global_time_scale then pcall(space.dialog_set_global_time_scale, space, speed) end
+            if space.imp_dialogs_manager then
+                local dm = space.imp_dialogs_manager
+                if dm.dialog_set_global_time_scale then pcall(dm.dialog_set_global_time_scale, dm, speed) end
+            end
+        end
+        local mp = G.main_player
+        if mp and mp.dialog_set_time_speed_scale then
+            pcall(mp.dialog_set_time_speed_scale, mp, enable, speed)
+        end
+    end
+end
+ 
+_G.RunSetSpeed = function(valIndex)
+ 
+    local speeds = {1.0, 1.5, 3.0, 5.0, 7.5, 10.0, 30.0}
+    local targetSpeed = speeds[valIndex] or 1.0
+    local isEnable = (valIndex > 1)
+ 
+    -- Try GM first... capture success for debugging.
+    local ok_new = apply_new_gm_speed(targetSpeed)
+ 
+    -- Always apply the legacy dialog-based speed adjustments as well
+    apply_old_dialog_speed(targetSpeed, isEnable)
+ 
+    if ok_new then
+        write_debug("Set Speed via GM API to: x" .. targetSpeed)
+    else
+        write_debug("Set Speed via legacy dialog to: x" .. targetSpeed)
+    end
+end
+ 
+-- 11. Auto Buff
+_G.RunAutoBuff = function()
+    local mp = G and G.main_player
+    if not mp then
+        write_debug("[AutoBuff] ERROR: main player not found")
+        return
+    end
+ 
+    write_debug("[AutoBuff] Starting auto-buff sequence")
+ 
+    local applied_count = 0
+ 
+    local cfg = nil
+    pcall(function() cfg = get_buff_config() end)
+    local auto_ids = (cfg and cfg.auto) or {}
+ 
+    if auto_ids and #auto_ids > 0 then
+        for _, bid in ipairs(auto_ids) do
+            if type(bid) == "number" then
+                -- Optimization: Use note_map from cfg if available
+                local note = (cfg and cfg.note_map and cfg.note_map[bid]) or get_buff_note(bid)
+                local ok = pcall(function() return mp.add_buff(mp, bid) end)
+                if ok then
+                    applied_count = applied_count + 1
+                    write_debug(string.format("[AutoBuff] Applied buff id=%d ✔ %s", bid, quote_note_for_log(note)))
+                else
+                    write_debug(string.format("[AutoBuff] Failed to apply buff id=%d ✘ %s", bid, quote_note_for_log(note)))
+                end
+            else
+                write_debug(string.format("[AutoBuff] Skipping invalid buff id in config: %s", tostring(bid)))
+            end
+        end
+    else
+        write_debug("[AutoBuff] Warning: AUTO list is empty or missing in config")
+        if type(BUFF_LIST) == "table" then
+            for _, entry in ipairs(BUFF_LIST) do
+                if entry and entry.auto then
+                    local note = entry.note or ((cfg and cfg.note_map and cfg.note_map[entry.id]) or get_buff_note(entry.id))
+                    local ok = pcall(mp.add_buff, mp, entry.id)
+                    if ok then
+                        applied_count = applied_count + 1
+                        write_debug(string.format("[AutoBuff] Applied buff id=%d ✔ %s", entry.id, quote_note_for_log(note)))
+                    else
+                        write_debug(string.format("[AutoBuff] Failed to apply buff id=%d ✘ %s", entry.id, quote_note_for_log(note)))
+                    end
+                end
+            end
+        else
+            write_debug("[AutoBuff] No AUTO list in config and BUFF_LIST is not available")
+        end
+    end
+ 
+    write_debug(string.format("[AutoBuff] Completed auto-buff sequence. Total applied: %d", applied_count))
+end
+ 
+-- 12. Permanent Buffs
+_G.RunPermanentBuffs = function()
+    write_debug("[PermanentBuffs] Starting buff application")
+ 
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[PermanentBuffs] ERROR: main player not found")
+        return
+    end
+ 
+    local action = nil
+    pcall(function()
+        action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+    end)
+ 
+    if not action then
+        write_debug("[PermanentBuffs] ERROR: combat_train_action not available")
+        return
+    end
+ 
+    local eid      = mp_local.entity_id
+    local reason   = "gm"
+    local level    = 5
+    local duration = 10675199116730015 -- very long duration
+ 
+    local function apply_buff(buff_id, note)
+        local ok = pcall(function()
+            action.add_buff(buff_id, eid, duration, level, eid, reason)
+        end)
+        if ok then
+            write_debug(string.format("[PermanentBuffs] add_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+            return true
+        else
+            local ok2 = pcall(function()
+                action:add_buff(buff_id, eid, duration, level, eid, reason)
+            end)
+            if ok2 then
+                write_debug(string.format("[PermanentBuffs] add_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            else
+                write_debug(string.format("[PermanentBuffs] add_buff id=%d ✘ %s", buff_id, quote_note_for_log(note)))
+                return false
+            end
+        end
+    end
+ 
+    local cfg = get_buff_config()
+    local perm_ids = cfg and cfg.permanent or {}
+ 
+    if not perm_ids or #perm_ids == 0 then
+        write_debug("[PermanentBuffs] Warning: Permanent list is empty or missing in config")
+        return
+    end
+ 
+    local applied = 0
+    for _, bid in ipairs(perm_ids) do
+        if type(bid) == "number" then
+            local note = (cfg and cfg.note_map and cfg.note_map[bid]) or get_buff_note(bid)
+            if apply_buff(bid, note) then applied = applied + 1 end
+        else
+            write_debug(string.format("[PermanentBuffs] Skipping invalid buff id: %s", tostring(bid)))
+        end
+    end
+ 
+    write_debug(string.format("[PermanentBuffs] Completed. Total applied: %d", applied))
+end
+ 
+-- 13. Remove Buffs
+_G.RunRemoveBuffs = function()
+    write_debug("[RemoveBuffs] Starting buff removal")
+ 
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[RemoveBuffs] ERROR: main player not found")
+        return
+    end
+ 
+    local mod_name = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+    local action = nil
+    pcall(function() action = portable.import(mod_name) end)
+    write_debug("[RemoveBuffs] combat_train_action loaded: " .. tostring(action ~= nil))
+ 
+    local function safe_call(desc, fn)
+        local ok, err = pcall(fn)
+        if ok then
+            write_debug("[RemoveBuffs] ✔ " .. desc)
+            return true
+        else
+            write_debug("[RemoveBuffs] ✘ " .. desc .. " -> " .. tostring(err))
+            return false
+        end
+    end
+ 
+    local function has_buff(buff_id)
+        local ok, res
+ 
+        ok, res = pcall(function()
+            if mp_local.has_buff then return mp_local.has_buff(mp_local, buff_id) end
+            if mp_local["has_buff"] and type(mp_local["has_buff"]) == "function" then return mp_local:has_buff(buff_id) end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+ 
+        ok, res = pcall(function()
+            if mp_local.get_buff then return mp_local.get_buff(mp_local, buff_id) ~= nil end
+            if mp_local["get_buff"] and type(mp_local["get_buff"]) == "function" then return mp_local:get_buff(buff_id) ~= nil end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+ 
+        ok, res = pcall(function()
+            if mp_local.buffs and type(mp_local.buffs) == "table" then
+                if mp_local.buffs[buff_id] then return true end
+                for _, v in pairs(mp_local.buffs) do
+                    if type(v) == "table" and (v.id == buff_id or v.buff_id == buff_id) then
+                        return true
+                    end
+                end
+            end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+ 
+        return false
+    end
+ 
+    local function remove_buff(buff_id, note)
+        local eid = mp_local and mp_local.entity_id
+        local removed = false
+ 
+        if action and action.rm_buff then
+            removed = safe_call(string.format("action.rm_buff(%d)", buff_id), function() action.rm_buff(buff_id) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+            removed = safe_call(string.format("action:rm_buff(%d)", buff_id), function() action:rm_buff(buff_id) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+        end
+ 
+        if action and action.remove_buff then
+            removed = safe_call(string.format("action.remove_buff(%d, %s)", buff_id, tostring(eid)), function() action.remove_buff(buff_id, eid) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+            removed = safe_call(string.format("action:remove_buff(%d, %s)", buff_id, tostring(eid)), function() action:remove_buff(buff_id, eid) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+        end
+ 
+        if action and action.del_buff then
+            removed = safe_call(string.format("action.del_buff(%d, %s)", buff_id, tostring(eid)), function() action.del_buff(buff_id, eid) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+            removed = safe_call(string.format("action:del_buff(%d, %s)", buff_id, tostring(eid)), function() action:del_buff(buff_id, eid) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+        end
+ 
+        if action and action.clear_buff then
+            removed = safe_call(string.format("action.clear_buff(%d, %s)", buff_id, tostring(eid)), function() action.clear_buff(buff_id, eid) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+            removed = safe_call(string.format("action:clear_buff(%d, %s)", buff_id, tostring(eid)), function() action:clear_buff(buff_id, eid) end) or removed
+            if removed then
+                write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                return true
+            end
+        end
+ 
+        if mp_local then
+            if mp_local.remove_buff then
+                removed = safe_call(string.format("mp.remove_buff(mp, %d)", buff_id), function() mp_local.remove_buff(mp_local, buff_id) end) or removed
+                if removed then
+                    write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                    return true
+                end
+                removed = safe_call(string.format("mp:remove_buff(%d)", buff_id), function() mp_local:remove_buff(buff_id) end) or removed
+                if removed then
+                    write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                    return true
+                end
+            end
+ 
+            if mp_local.del_buff then
+                removed = safe_call(string.format("mp.del_buff(mp, %d)", buff_id), function() mp_local.del_buff(mp_local, buff_id) end) or removed
+                if removed then
+                    write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                    return true
+                end
+                removed = safe_call(string.format("mp:del_buff(%d)", buff_id), function() mp_local:del_buff(bid) end) or removed
+                if removed then
+                    write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                    return true
+                end
+            end
+ 
+            if mp_local.clear_all_buffs then
+                removed = safe_call("mp.clear_all_buffs(mp)", function() mp_local.clear_all_buffs(mp_local) end) or removed
+                if removed then
+                    write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✔ %s", buff_id, quote_note_for_log(note)))
+                    return true
+                end
+            end
+        end
+ 
+        if not removed then
+            write_debug(string.format("[RemoveBuffs] remove_buff id=%d ✘ %s", buff_id, quote_note_for_log(note)))
+        end
+ 
+        return removed
+    end
+ 
+    -- load REMOVE list from buff_config.txt (uses cached data if mtime hasn't changed)
+    local cfg = get_buff_config()
+    local remove_ids = cfg and cfg.remove or {}
+ 
+    -- If no explicit REMOVE list, fall back to scanning BUFF_LIST (preserve compatibility)
+    local iterate_list = {}
+    if remove_ids and #remove_ids > 0 then
+        -- Optimization: Use note_map from cfg if available
+        for _, id in ipairs(remove_ids) do
+            local note = (cfg and cfg.note_map and cfg.note_map[id]) or get_buff_note(id)
+            table.insert(iterate_list, { id = id, note = note })
+        end
+        write_debug(string.format("[RemoveBuffs] Using %d ids from config REMOVE list", #iterate_list))
+    else
+        write_debug("[RemoveBuffs] Warning: REMOVE list is empty or missing in config")
+        -- fallback to original BUFF_LIST behavior if present
+        if type(BUFF_LIST) == "table" and #BUFF_LIST > 0 then
+            for _, entry in ipairs(BUFF_LIST) do table.insert(iterate_list, entry) end
+            write_debug(string.format("[RemoveBuffs] No REMOVE list in config; falling back to BUFF_LIST (%d entries)", #iterate_list))
+        else
+            write_debug("[RemoveBuffs] No REMOVE list and BUFF_LIST empty; nothing to do")
+            return
+        end
+    end
+ 
+    -- iterate and attempt removal
+    local removed_count = 0
+    for _, entry in ipairs(iterate_list) do
+        local id = entry.id
+        local note = entry.note or ((cfg and cfg.note_map and cfg.note_map[id]) or get_buff_note(id)) or ""
+        -- If entry came from BUFF_LIST, respect entry.remove == false to skip; if from config, treat as explicit remove
+        if entry.remove == false and not (remove_ids and #remove_ids > 0) then
+            write_debug(string.format("[RemoveBuffs] Skipping id=%d ❌ - remove=false %s", id or -1, quote_note_for_log(note)))
+        else
+            local present = false
+            local ok_has, pres = pcall(function() return has_buff(id) end)
+            if ok_has and pres then present = true end
+ 
+            if not present then
+                write_debug(string.format("[RemoveBuffs] Skipping id=%d ❌ - not present %s", id, quote_note_for_log(note)))
+            else
+                if remove_buff(id, note) then
+                    removed_count = removed_count + 1
+                else
+                    write_debug(string.format("[RemoveBuffs] remove_buff FAILED id=%d ✘ %s", id, quote_note_for_log(note)))
+                end
+            end
+        end
+    end
+ 
+    -- Configuration flags for fallback sweep (kept as in original)
+    RUN_FALLBACK_SWEEP = RUN_FALLBACK_SWEEP or false        -- must be true or "force" to allow fallback to run
+    FALLBACK_THRESHOLD = FALLBACK_THRESHOLD or 0           -- run fallback when removed_count <= this value
+ 
+    -- Fallback sweep function (only run as a last resort)
+    local function fallback_sweep()
+        pcall(function()
+            collectgarbage("collect")
+            local mp = G and G.main_player
+            if not mp then return end
+ 
+            local ok, act = pcall(require, "hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+            local use_act = ok and act and act.rm_buff
+ 
+            write_debug("[RemoveBuff] Starting fallback sweep 30000 -> 201000; using act.rm_buff=" .. tostring(use_act))
+ 
+            local start_id, end_id = 30000, 201000
+ 
+            -- Tunable sizes
+            local chunk_size = 5        -- inner loop size to keep each iteration small
+            local group_size = 50       -- number of IDs processed before a pause
+            local pause_seconds = 2     -- pause between groups to avoid freezing
+            local removed_total = 0
+ 
+            -- portable sleep helper without os.execute
+            local function sleep(sec)
+                if not sec or sec <= 0 then return end
+ 
+                -- 1) scheduler.yield if available; approximate seconds by repeated yields
+                if type(scheduler) == "table" and type(scheduler.yield) == "function" then
+                    local t0 = os.time()
+                    while os.time() - t0 < sec do
+                        scheduler.yield()
+                    end
+                    return
+                end
+ 
+                -- 2) LuaSocket if available
+                local ok_socket, socket = pcall(require, "socket")
+                if ok_socket and socket and type(socket.sleep) == "function" then
+                    socket.sleep(sec)
+                    return
+                end
+ 
+                -- 3) coroutine.yield if running inside a coroutine; approximate seconds
+                if coroutine and type(coroutine.yield) == "function" then
+                    local t0 = os.time()
+                    while os.time() - t0 < sec do
+                        coroutine.yield()
+                    end
+                    return
+                end
+ 
+                -- 4) fallback busy-wait using os.clock (non-blocking as possible)
+                local t0 = os.clock()
+                while os.clock() - t0 < sec do
+                    if coroutine and type(coroutine.yield) == "function" then
+                        coroutine.yield()
+                    end
+                end
+            end
+ 
+            -- iterate by groups to allow pauses between large ranges
+            for group_base = start_id, end_id, group_size do
+                local group_top = math.min(group_base + group_size - 1, end_id)
+                -- process group in small chunks to avoid long blocking loops
+                for base = group_base, group_top, chunk_size do
+                    local top = math.min(base + chunk_size - 1, group_top)
+                    local removed_in_chunk = 0
+ 
+                    for i = base, top do
+                        local ok1 = false
+                        if mp.remove_buff then
+                            ok1 = pcall(mp.remove_buff, mp, i)
+                        end
+                        if use_act then
+                            pcall(act.rm_buff, i)
+                        end
+                        if ok1 then removed_in_chunk = removed_in_chunk + 1 end
+                    end
+ 
+                    removed_total = removed_total + removed_in_chunk
+                    write_debug(string.format("[RemoveBuff] Processed %d-%d removed=%d total=%d", base, top, removed_in_chunk, removed_total))
+                    collectgarbage("collect")
+                end
+ 
+                -- pause between groups to avoid freezing the environment
+                write_debug(string.format("[RemoveBuff] Completed group %d-%d, pausing %ds", group_base, group_top, pause_seconds))
+                sleep(pause_seconds)
+            end
+ 
+            write_debug("[RemoveBuff] Fallback sweep completed. Total removed (mp.remove_buff successes): " .. removed_total)
+            collectgarbage("collect")
+        end)
+    end
+ 
+    -- decide whether to run fallback
+    if not (RUN_FALLBACK_SWEEP == true or RUN_FALLBACK_SWEEP == "force") then
+        write_debug(string.format("[RemoveBuffs] Skipping fallback sweep because RUN_FALLBACK_SWEEP=%s", tostring(RUN_FALLBACK_SWEEP)))
+    else
+        if removed_count <= FALLBACK_THRESHOLD then
+            write_debug(string.format("[RemoveBuffs] Running fallback sweep because removed_count=%d <= %d", removed_count, FALLBACK_THRESHOLD))
+            fallback_sweep()
+        else
+            write_debug(string.format("[RemoveBuffs] Not running fallback sweep because removed_count=%d > %d", removed_count, FALLBACK_THRESHOLD))
+        end
+    end
+ 
+    write_debug(string.format("[RemoveBuffs] Completed. Removed=%d", removed_count))
+end
+ 
+ 
+-- 14. Reset Crime
+_G.ResetCrime = function()
+    pcall(function()
+        local dec = package.loaded["hexm.client.debug.gm.gm_decorator"]
+            or (pcall(require, "hexm.client.debug.gm.gm_decorator") and package.loaded["hexm.client.debug.gm.gm_decorator"])
+ 
+        if dec and dec.gm_command_short_cuts and dec.gm_command_short_cuts.game then
+            local cmds = dec.gm_command_short_cuts.game
+            -- [RESET CRIME] -- resets when you teleport or reset instance/zone
+            if cmds["$forbid_witness_wanfa"] then pcall(cmds["$forbid_witness_wanfa"], 1) end
+            if cmds["$forbid_police_wanfa"] then pcall(cmds["$forbid_police_wanfa"], 1) end
+        end
+    end)
+ 
+    if type(write_debug) == "function" then
+        write_debug("[ResetCrime] executed -- resets when you teleport or reset instance/zone")
+    end
+end
+ 
+-- Backwards-compatible local function reference
+local function reset_crime()
+    return _G.ResetCrime()
+end
+ 
+-- 15. Teleport Moonveil Peak
+_G.RunTeleportBlissfulRetreat = function()
+    pcall(function()
+        local ok, skip = pcall(require, "hexm.client.ui.windows.gm.gm_skip_window")
+        if ok and skip and skip.gm_skip_flow_imp then
+            -- Use room id 7 for Blissful Retreat
+            pcall(skip.gm_skip_flow_imp, 11, nil)
+            write_debug("[Teleport Moonveil Peak] teleported to room id 11")
+        else
+            write_debug("[Teleport Moonveil Peak] skip module not available")
+        end
+    end)
+end
+ 
+-- 16. Teleport to Random
+_G._TELEPORT_INVALID_IDS = _G._TELEPORT_INVALID_IDS or {}
+ 
+-- Path for valid list persistence
+local TELEPORT_VALID_PATH = "C:\\temp\\Where Winds Meet\\Scripts\\Teleport_validList.txt"
+_G._TELEPORT_VALID_IDS = _G._TELEPORT_VALID_IDS or {}
+ 
+-- initial known-good ids requested by user (will be persisted)
+local rids = {6,7,8,9,10,11,12,13,14,16}
+ 
+-- helper: write valid list file (overwrite)
+local function write_teleport_valid_file(line_text)
+    pcall(function()
+        local f = io.open(TELEPORT_VALID_PATH, "w")
+        if f then
+            f:write(line_text .. "\n")
+            f:close()
+        end
+    end)
+end
+ 
+-- helper: persist current _G._TELEPORT_VALID_IDS as a braced list
+local function persist_valid_set()
+    local merged_list = {}
+    for id, _ in pairs(_G._TELEPORT_VALID_IDS) do
+        merged_list[#merged_list + 1] = tonumber(id)
+    end
+    table.sort(merged_list)
+    local parts = {}
+    for i = 1, #merged_list do parts[#parts+1] = tostring(merged_list[i]) end
+    local list_str = "{" .. table.concat(parts, ",") .. "}"
+    write_teleport_valid_file(list_str)
+end
+ 
+-- helper: add a single id to valid set and persist
+local function add_valid_id(id)
+    id = tonumber(id)
+    if not id then return end
+    -- already present: do nothing (avoids extra writes)
+    if _G._TELEPORT_VALID_IDS[id] then
+        write_debug("[Teleport] Valid id already present: " .. tostring(id))
+        return
+    end
+    -- add and persist
+    _G._TELEPORT_VALID_IDS[id] = true
+    persist_valid_set()
+    write_debug("[Teleport] Added valid id to Teleport_validList: " .. tostring(id))
+end
+ 
+-- seed initial rids into valid set using add_valid_id so file is written
+pcall(function()
+    local initial_ids = rids or {}
+    for _, id in ipairs(initial_ids) do add_valid_id(id) end
+end)
+ 
+-- parse debug file for suggested blacklist entries
+local function parse_debug_blacklists()
+    local result = {}
+    pcall(function()
+        if not DEBUG_FILE_ENABLED or not DEBUG_FILE_PATH then return end
+        local f = io.open(DEBUG_FILE_PATH, "r")
+        if not f then return end
+        for line in f:lines() do
+            local s = line:match("%[Teleport%]%s*Suggested blacklist:%s*%{(.-)%}")
+            if s then
+                for num in s:gmatch("%d+") do
+                    local n = tonumber(num)
+                    if n then result[n] = true end
+                end
+            end
+        end
+        f:close()
+    end)
+    return result
+end
+ 
+-- merge a table of ids into a lookup set
+local function merge_ids_into_set(set, ids)
+    if not set or not ids then return end
+    for k, _ in pairs(ids) do
+        set[tonumber(k)] = true
+    end
+end
+ 
+-- fallback teleport invalid-id memory and debug-file parsing
+_G.RunTeleportRandom_impl = function(start_id, end_id, blacklist)
+    local DEFAULT_BLACKLIST = {2,5} -- ALWAYS BLACKLIST GM ROOM ID 5
+    local blacklist_lookup = {}
+ 
+    if type(blacklist) == "table" then
+        for _, v in ipairs(blacklist) do
+            local n = tonumber(v)
+            if n then blacklist_lookup[n] = true end
+        end
+    end
+    for _, v in ipairs(DEFAULT_BLACKLIST) do blacklist_lookup[tonumber(v)] = true end
+ 
+    merge_ids_into_set(blacklist_lookup, _G._TELEPORT_INVALID_IDS)
+ 
+    -- parse debug file for suggested blacklists and merge them
+    local parsed = parse_debug_blacklists()
+    merge_ids_into_set(blacklist_lookup, parsed)
+ 
+    -- random seed
+    pcall(function()
+        math.randomseed(os.time() + (mp and mp.entity_id or 0))
+        math.random(); math.random(); math.random()
+    end)
+ 
+    local invalid_ids_set = {} -- local set of ids found invalid this run
+    local max_attempts = 150 -- MAX ATTEMPT AFTER PRESSING THE BUTTON SET TO LOW NUMBER TO AVOID LAG/FREEZING
+    local chosen, chosen_pos, valid = nil, nil, false
+    local teleported = false
+ 
+    local function try_skip(candidate)
+        local ok_req, skip = pcall(require, "hexm.client.ui.windows.gm.gm_skip_window")
+        if ok_req and skip and skip.gm_skip_flow_imp then
+            local ok_call, res = pcall(skip.gm_skip_flow_imp, candidate, nil)
+            write_debug(string.format("[Teleport] Tried skip.gm_skip_flow_imp(%s) -> ok=%s res=%s", tostring(candidate), tostring(ok_call), tostring(res)))
+            return ok_call and (res ~= false)
+        end
+        return false
+    end
+ 
+    local function try_entity(candidate)
+        local ok_ent, ent = pcall(function() return G and G.space and G.space:get_entity(candidate) end)
+        if not (ok_ent and ent) then
+            write_debug(string.format("[Teleport] id=%s not found in space, skipping", tostring(candidate)))
+            return nil
+        end
+        local ok_pos, pos = pcall(function()
+            if ent.get_position then return ent:get_position() end
+            if ent.getPosition then return ent:getPosition() end
+            if ent.position then return ent.position end
+            return nil
+        end)
+        if not (ok_pos and pos and type(pos) == "table" and (pos.x or pos[1])) then
+            write_debug(string.format("[Teleport] id=%s has no usable position, skipping", tostring(candidate)))
+            return nil
+        end
+        local px = pos.x or pos[1]; local py = pos.y or pos[2]; local pz = pos.z or pos[3]
+        if not (px and py and pz) then
+            write_debug(string.format("[Teleport] id=%s returned a position but missing coords, skipping", tostring(candidate)))
+            return nil
+        end
+        return { x = px, y = py, z = pz }
+    end
+ 
+    -- check if all candidates are marked invalid 
+    local function all_attempted_for_table(tbl, invalid_set)
+        if not tbl or #tbl == 0 then return false end
+        for _, v in ipairs(tbl) do
+            if not invalid_set[tonumber(v)] then
+                return false
+            end
+        end
+        return true
+    end
+ 
+    local function all_attempted_for_range(s, e, invalid_set)
+        if not s or not e then return false end
+        local total = e - s + 1
+        if total <= 0 then return false end
+        local count = 0
+        for id, _ in pairs(invalid_set) do
+            if tonumber(id) >= s and tonumber(id) <= e then count = count + 1 end
+        end
+        return count >= total
+    end
+ 
+    -- pick from a provided table of candidates
+    local provided_table = (type(start_id) == "table")
+    if provided_table then
+        local candidates = start_id
+        for attempt = 1, max_attempts do
+            local idx = math.random(1, #candidates)
+            local candidate = tonumber(candidates[idx])
+            write_debug(string.format("[Teleport] Attempt %d: picked candidate=%s", attempt, tostring(candidate)))
+ 
+            if blacklist_lookup[candidate] then
+                write_debug(string.format("[Teleport] candidate=%s is blacklisted, skipping", tostring(candidate)))
+                invalid_ids_set[candidate] = true
+            else
+                local ok_skip = false
+                pcall(function() ok_skip = try_skip(candidate) end)
+                if ok_skip then
+                    -- record valid id and persist
+                    add_valid_id(candidate)
+                    write_debug(string.format("[Teleport] Teleported via skip.gm_skip_flow_imp to id %s", tostring(candidate)))
+                    return true
+                end
+ 
+                local pos = nil
+                pcall(function() pos = try_entity(candidate) end)
+                if pos then
+                    chosen = candidate; chosen_pos = pos; valid = true; break
+                else
+                    invalid_ids_set[candidate] = true
+                end
+            end
+        end
+    else
+        local s = tonumber(start_id) or 1 -- START ID ( YOU CAN CHANGE THIS )
+        local e = tonumber(end_id) or 999999 -- END ID  ( YOU CAN CHANGE THIS )
+        for attempt = 1, max_attempts do
+            local candidate = math.random(s, e)
+            write_debug(string.format("[Teleport] Attempt %d: picked id=%s", attempt, tostring(candidate)))
+ 
+            if blacklist_lookup[candidate] then
+                write_debug(string.format("[Teleport] id=%s is blacklisted, skipping", tostring(candidate)))
+                invalid_ids_set[candidate] = true
+            else
+                local ok_skip = false
+                pcall(function() ok_skip = try_skip(candidate) end)
+                if ok_skip then
+                    -- record valid id and persist
+                    add_valid_id(candidate)
+                    write_debug(string.format("[Teleport] Teleported via skip.gm_skip_flow_imp to id %s", tostring(candidate)))
+                    return true
+                end
+ 
+                local pos = nil
+                pcall(function() pos = try_entity(candidate) end)
+                if pos then
+                    chosen = candidate; chosen_pos = pos; valid = true; break
+                else
+                    invalid_ids_set[candidate] = true
+                end
+            end
+        end
+    end
+ 
+    -- attempt teleport if we found a valid candidate
+    if valid and chosen_pos then
+        pcall(function()
+            if mp and mp.teleport_to_entity then
+                local ok, res = pcall(mp.teleport_to_entity, mp, chosen)
+                teleported = ok and (res ~= false)
+                write_debug(string.format("[Teleport] Tried mp.teleport_to_entity(%s) -> success=%s", tostring(chosen), tostring(teleported)))
+            end
+        end)
+ 
+        if not teleported then
+            pcall(function()
+                if mp and mp.teleport_to then
+                    local ok, res = pcall(mp.teleport_to, mp, chosen_pos.x, chosen_pos.y, chosen_pos.z)
+                    teleported = ok and (res ~= false)
+                    write_debug(string.format("[Teleport] Tried mp.teleport_to(x,y,z) -> success=%s", tostring(teleported)))
+                elseif mp and mp.set_position then
+                    local ok, res = pcall(mp.set_position, mp, chosen_pos.x, chosen_pos.y, chosen_pos.z)
+                    teleported = ok and (res ~= false)
+                    write_debug(string.format("[Teleport] Tried mp.set_position(x,y,z) -> success=%s", tostring(teleported)))
+                elseif mp and mp.setPosition then
+                    local ok, res = pcall(mp.setPosition, mp, chosen_pos.x, chosen_pos.y, chosen_pos.z)
+                    teleported = ok and (res ~= false)
+                    write_debug(string.format("[Teleport] Tried mp.setPosition(x,y,z) -> success=%s", tostring(teleported)))
+                end
+            end)
+        end
+ 
+        if not teleported then
+            pcall(function()
+                if mp and mp.entity_id and G and G.space and G.space.move_entity_to_position then
+                    local ok, res = pcall(G.space.move_entity_to_position, G.space, mp.entity_id, chosen_pos.x, chosen_pos.y, chosen_pos.z)
+                    teleported = ok and (res ~= false)
+                    write_debug(string.format("[Teleport] Tried G.space.move_entity_to_position -> success=%s", tostring(teleported)))
+                end
+            end)
+        end
+ 
+        if not teleported then
+            pcall(function()
+                if mp then
+                    if mp.position then
+                        mp.position.x = chosen_pos.x; mp.position.y = chosen_pos.y; mp.position.z = chosen_pos.z
+                        teleported = true
+                        write_debug("[Teleport] Set mp.position fields directly (best-effort)")
+                    elseif mp.pos then
+                        mp.pos = { chosen_pos.x, chosen_pos.y, chosen_pos.z }
+                        teleported = true
+                        write_debug("[Teleport] Set mp.pos directly (best-effort)")
+                    end
+                end
+            end)
+        end
+ 
+        write_debug(string.format("[Teleport] Final result: id=%s valid=%s teleported=%s", tostring(chosen), tostring(valid), tostring(teleported)))
+ 
+        -- if teleport failed, mark chosen as invalid for future runs
+        if not teleported and chosen then
+            invalid_ids_set[chosen] = true
+        end
+ 
+        -- merge invalids into global persistent set
+        for id, _ in pairs(invalid_ids_set) do
+            _G._TELEPORT_INVALID_IDS[tonumber(id)] = true
+        end
+ 
+        -- if teleport succeeded via non-skip methods, optionally add to valid list
+        if teleported and chosen then
+            -- uncomment the next line if you want to persist non-skip successes as valid too
+			-- if you want every successful teleport (including mp.teleport_to_entity, mp.teleport_to, etc.) to be added to Teleport_validList.txt.
+			-- leave this as is if you don't know what you are doing
+            -- add_valid_id(chosen)
+        end
+ 
+        return teleported
+    end
+ 
+    -- If we reach here, we failed to find a valid id within max_attempts
+    -- Check whether we've effectively attempted all ids
+    if provided_table then
+        if all_attempted_for_table(start_id, invalid_ids_set) then
+            write_debug(string.format("[Teleport] All candidates in provided list have been attempted and marked invalid. list_size=%d", #start_id))
+        end
+    else
+        local s = tonumber(start_id) or 1 -- START ID ( YOU CAN CHANGE THIS )
+        local e = tonumber(end_id) or 999999 -- END ID ( YOU CAN CHANGE THIS )
+        if all_attempted_for_range(s, e, invalid_ids_set) then
+            write_debug(string.format("[Teleport] All ids in range %d-%d have been attempted and marked invalid.", s, e))
+        end
+    end
+ 
+    -- Merge DEFAULT, provided blacklist, and invalid ids into a suggested blacklist string
+    local merged_set = {}
+    for _, v in ipairs(DEFAULT_BLACKLIST) do merged_set[tonumber(v)] = true end
+    if type(blacklist) == "table" then for _, v in ipairs(blacklist) do merged_set[tonumber(v)] = true end end
+    for id, _ in pairs(invalid_ids_set) do merged_set[tonumber(id)] = true end
+    for id, _ in pairs(_G._TELEPORT_INVALID_IDS) do merged_set[tonumber(id)] = true end
+ 
+    local merged_list = {}
+    for id, _ in pairs(merged_set) do table.insert(merged_list, tonumber(id)) end
+    table.sort(merged_list)
+    local parts = {}
+    for i = 1, #merged_list do parts[#parts+1] = tostring(merged_list[i]) end
+    local blacklist_str = "{" .. table.concat(parts, ",") .. "}"
+ 
+    write_debug(string.format("[Teleport] Failed to find a valid id in range %s-%s after %d attempts", tostring(start_id or 1), tostring(end_id or 999999), max_attempts)) -- FOR LOGGING ONLY
+    write_debug("[Teleport] Suggested blacklist: " .. blacklist_str)
+ 
+    -- persist merged_list into global invalid set for future runs
+    for _, id in ipairs(merged_list) do _G._TELEPORT_INVALID_IDS[tonumber(id)] = true end
+ 
+    -- FINAL FALLBACK: attempt one deterministic pass through that list (first non-blacklisted candidate) and try to teleport to it.
+    if provided_table and type(start_id) == "table" and #start_id > 0 then
+        write_debug("[Teleport] max_attempts reached; attempting one final deterministic teleport from provided candidate list")
+        for _, candidate in ipairs(start_id) do
+            candidate = tonumber(candidate)
+            if candidate and not blacklist_lookup[candidate] then
+                write_debug(string.format("[Teleport] Final-list attempt: trying id=%s", tostring(candidate)))
+                -- try skip first
+                local ok_skip = false
+                pcall(function() ok_skip = try_skip(candidate) end)
+                if ok_skip then
+                    -- record valid id and persist
+                    add_valid_id(candidate)
+                    write_debug(string.format("[Teleport] Final-list teleport succeeded via skip.gm_skip_flow_imp to id %s", tostring(candidate)))
+                    return true
+                end
+ 
+                local pos = nil
+                pcall(function() pos = try_entity(candidate) end)
+                if pos then
+                    local ok_try = false
+                    pcall(function()
+                        if mp and mp.teleport_to_entity then
+                            local ok, res = pcall(mp.teleport_to_entity, mp, candidate)
+                            ok_try = ok and (res ~= false)
+                            write_debug(string.format("[Teleport] Final-list Tried mp.teleport_to_entity(%s) -> success=%s", tostring(candidate), tostring(ok_try)))
+                        end
+                    end)
+                    if not ok_try then
+                        pcall(function()
+                            if mp and mp.teleport_to then
+                                local ok, res = pcall(mp.teleport_to, mp, pos.x, pos.y, pos.z)
+                                ok_try = ok and (res ~= false)
+                                write_debug(string.format("[Teleport] Final-list Tried mp.teleport_to(x,y,z) -> success=%s", tostring(ok_try)))
+                            end
+                        end)
+                    end
+                    if not ok_try then
+                        pcall(function()
+                            if mp and mp.entity_id and G and G.space and G.space.move_entity_to_position then
+                                local ok, res = pcall(G.space.move_entity_to_position, G.space, mp.entity_id, pos.x, pos.y, pos.z)
+                                ok_try = ok and (res ~= false)
+                                write_debug(string.format("[Teleport] Final-list Tried G.space.move_entity_to_position -> success=%s", tostring(ok_try)))
+                            end
+                        end)
+                    end
+                    if not ok_try then
+                        pcall(function()
+                            if mp then
+                                if mp.position then
+                                    mp.position.x = pos.x; mp.position.y = pos.y; mp.position.z = pos.z
+                                    ok_try = true
+                                    write_debug("[Teleport] Final-list Set mp.position fields directly (best-effort)")
+                                elseif mp.pos then
+                                    mp.pos = { pos.x, pos.y, pos.z }
+                                    ok_try = true
+                                    write_debug("[Teleport] Final-list Set mp.pos directly (best-effort)")
+                                end
+                            end
+                        end)
+                    end
+ 
+                    if ok_try then
+                        write_debug(string.format("[Teleport] Final-list teleport succeeded to id=%s", tostring(candidate)))
+                        return true
+                    else
+                        write_debug(string.format("[Teleport] Final-list teleport failed for id=%s; marking invalid", tostring(candidate)))
+                        _G._TELEPORT_INVALID_IDS[candidate] = true
+                    end
+                else
+                    write_debug(string.format("[Teleport] Final-list candidate id=%s has no usable position; marking invalid", tostring(candidate)))
+                    _G._TELEPORT_INVALID_IDS[candidate] = true
+                end
+            else
+                write_debug(string.format("[Teleport] Final-list candidate id=%s skipped (blacklisted or previously invalid)", tostring(candidate)))
+            end
+        end
+ 
+        write_debug("[Teleport] Final-list deterministic attempts exhausted; no teleport succeeded")
+    end
+ 
+    return false
+end
+ 
+-- 00. disable logging ??
+_G.DisableLogsAndChecks = function()
+    local ok_combat, gm_combat = pcall(require, "hexm.client.debug.gm.gm_commands.gm_combat")
+    if ok_combat and gm_combat then
+        if gm_combat.gm_forbid_behit_highlight then pcall(gm_combat.gm_forbid_behit_highlight, 1) end
+        if gm_combat.gm_enable_stopframe_debug then pcall(gm_combat.gm_enable_stopframe_debug, 0) end
+    end
+ 
+    local ok_cutscene, gm_cutscene = pcall(require, "hexm.client.debug.gm.gm_commands.gm_cutscene")
+    if ok_cutscene and gm_cutscene then
+        if gm_cutscene.gm_cutscene_clear_log then pcall(gm_cutscene.gm_cutscene_clear_log) end
+        if gm_cutscene.gm_cutscene_debug_terminate then pcall(gm_cutscene.gm_cutscene_debug_terminate) end
+    end
+ 
+    local ok_activity, gm_activity = pcall(require, "hexm.client.debug.gm.gm_commands.gm_activity_center")
+    if ok_activity and gm_activity and gm_activity.gm_activity_center_clear then
+        pcall(gm_activity.gm_activity_center_clear)
+    end
+ 
+    local ok_hotfix, gm_hotfix = pcall(require, "hexm.client.debug.gm.gm_commands.gm_hotfix")
+    if ok_hotfix and gm_hotfix then
+        if gm_hotfix.gm_hotfix_del_local_cache then pcall(gm_hotfix.gm_hotfix_del_local_cache) end
+    end
+ 
+    local ok_story, gm_story = pcall(require, "hexm.client.debug.gm.gm_commands.gm_storyline")
+    if ok_story and gm_story and gm_story.gm_server_not_run_lua_script then
+        pcall(gm_story.gm_server_not_run_lua_script)
+    end
+ 
+    if type(write_debug) == "function" then
+        write_debug("[✔] logging disabled")
+    end
+end
+ 
+-- 000. HIDDEN UTILS/FUNCTIONS
+local function refresh_combat_menu()
+    local gm_combat = package.loaded["hexm.client.debug.gm.gm_commands.gm_combat"]
+    if gm_combat and gm_combat.gm_open_combat_train then gm_combat.gm_open_combat_train() end
+end
+ 
+local function weapon_guise()
+    local gm_decorator = package.loaded["hexm.client.debug.gm.gm_decorator"] or require("hexm.client.debug.gm.gm_decorator")
+    if gm_decorator.gm_command_short_cuts.game then
+        local cmds = gm_decorator.gm_command_short_cuts.game
+        if cmds["$weapon_guise"] then pcall(cmds["$weapon_guise"], 1) end
+    end
+end
+ 
+-- =================================================================================
+-- SECTION 3: STATE MANAGEMENT & LOGIC
+-- =================================================================================
+ 
+-- State Variables
+_G.SPEED_INDEX   = 1 -- 1=Normal
+_G.LOOT_STATE    = 0 -- 0=Off, 1=Once, 2=Loop
+_G.BUFF_STATE    = 0
+_G.RECOVER_STATE = 0
+-- Loop intervals (seconds) - edit these
+_G.LOOT_LOOP_SEC    = _G.LOOT_LOOP_SEC or 1.0 -- edit this if wish to change the loop time for: Autoloot
+_G.BUFF_LOOP_SEC    = _G.BUFF_LOOP_SEC or 3.0 -- edit this if wish to change the loop time for: AutoBuff
+_G.RECOVER_LOOP_SEC = _G.RECOVER_LOOP_SEC or 5.0 -- edit this if wish to change the loop time for: AutoRecover
+ 
+-- Definitions
+local SPEED_LABELS = {"x1.0", "x1.5", "x3.0", "x5.0", "x7.5", "10.0", "30.0"}
+local STATE_LABELS = {[0]="OFF", [1]="ONCE", [2]="LOOP"}
+--local FOV_VALUES   = {10,20,30,40,50,60,70,80,90,100}
+--_G.FOV_INDEX       = 6
+ 
+-- Speed picker modal (can be defined before queueButton calls)
+local speedPickerPanel = nil
+ 
+local SPEED_MENU_LABELS = {"x1.0", "x1.5", "x3.0", "x5.0", "x7.5", "10.0", "30.0"}
+local SPEED_MENU_VALUES = {1.0, 1.5, 3.0, 5.0, 7.5, 10.0, 30.0}
+-- NOTE: I included a distinct "Normal" value (0.0) so it maps exactly to the "Normal" label.
+-- If your RunSetSpeed expects a different sentinel for Normal, change SPEED_MENU_VALUES[1] accordingly.
+ 
+local function CloseSpeedPicker()
+    if speedPickerPanel and type(speedPickerPanel.removeFromParent) == "function" then
+        pcall(function() speedPickerPanel:removeFromParent() end)
+    end
+    speedPickerPanel = nil
+end
+ 
+local function ShowSpeedPicker()
+    if speedPickerPanel then
+        CloseSpeedPicker()
+        return
+    end
+ 
+    local w = 420
+    local h = 60 + (#SPEED_MENU_LABELS * 64)
+    speedPickerPanel = ccui.Layout:create()
+    speedPickerPanel:setContentSize(cc.size(w, h))
+    speedPickerPanel:setBackGroundColorType(1)
+    speedPickerPanel:setBackGroundColor(cc.c3b(30, 30, 35))
+    speedPickerPanel:setBackGroundColorOpacity(230)
+ 
+    -- Helper to refresh the visual state of each speed entry
+    local function RefreshSpeedPickerVisuals()
+        if not speedPickerPanel then return end
+        for _, child in ipairs(speedPickerPanel:getChildren()) do
+            local t = child._speedTxt
+            local idx = child._index
+            if t and idx then
+                if _G.SPEED_INDEX == idx then
+                    t:setColor(cc.c3b(0,255,0))
+                else
+                    t:setColor(cc.c3b(200,200,200))
+                end
+            end
+        end
+    end
+ 
+    local centerX, centerY
+    if panel and type(panel.getPositionX) == "function" then
+        local px, py = panel:getPositionX(), panel:getPositionY()
+        local pw, ph = panel:getContentSize().width, panel:getContentSize().height
+        centerX = px + pw * 0.5
+        centerY = py + ph * 0.5
+    else
+        centerX = size.width * 0.5
+        centerY = size.height * 0.5
+    end
+    speedPickerPanel:setPosition(cc.p(centerX - w * 0.5, centerY - h * 0.5))
+ 
+    local title = ccui.Text:create("Choose Speed", "Arial", 28)
+    title:setColor(cc.c3b(220,220,220))
+    title:setAnchorPoint(cc.p(0.5, 1))
+    title:setPosition(cc.p(w * 0.5, h - 12))
+    speedPickerPanel:addChild(title)
+ 
+    for i, label in ipairs(SPEED_MENU_LABELS) do
+        local btn = ccui.Button:create()
+        btn:setTitleText("")
+        btn:setScale9Enabled(true)
+        btn:setContentSize(cc.size(w - 40, 56))
+        btn:setAnchorPoint(cc.p(0.5, 1))
+        local y = h - 40 - ((i-1) * 64)
+        btn:setPosition(cc.p(w * 0.5, y))
+        btn:setColor(cc.c3b(30,30,35))
+ 
+        local txt = ccui.Text:create(label, "Arial", 28)
+        txt:setColor(cc.c3b(200,200,200))
+        txt:setAnchorPoint(cc.p(0.5, 0.5))
+        txt:setPosition(cc.p((w - 40) * 0.5, 28))
+        btn:addChild(txt)
+ 
+        -- store references so RefreshSpeedPickerVisuals can update them
+        btn._index = i
+        btn._speedTxt = txt
+ 
+        btn:addTouchEventListener(function(s, e)
+            if e == 2 then
+                pcall(function()
+                    -- set the index (for visuals) and also set the actual speed value
+                    _G.SPEED_INDEX = i
+                    -- store the chosen numeric value in a global so other code can read it if needed
+                    _G.SPEED_VALUE = SPEED_MENU_VALUES[i]
+                    -- call RunSetSpeed with the actual value if the function expects a numeric speed
+                    if type(_G.RunSetSpeed) == "function" then
+                        -- prefer passing the numeric value; if your RunSetSpeed expects an index instead,
+                        -- change this line to: pcall(_G.RunSetSpeed, _G.SPEED_INDEX)
+                        pcall(_G.RunSetSpeed, _G.SPEED_INDEX)
+                    end
+                end)
+                pcall(UpdateButtonVisuals)
+                pcall(RefreshSpeedPickerVisuals) -- ensure modal visuals update immediately
+                CloseSpeedPicker()
+            end
+        end)
+        speedPickerPanel:addChild(btn)
+    end
+ 
+    -- ensure initial visuals are correct when the modal opens
+    pcall(RefreshSpeedPickerVisuals)
+ 
+    local overlay = ccui.Layout:create()
+    overlay:setContentSize(cc.size(size.width, size.height))
+    overlay:setBackGroundColorType(1)
+    overlay:setBackGroundColor(cc.c3b(0,0,0))
+    overlay:setBackGroundColorOpacity(120)
+    overlay:setPosition(cc.p(0,0))
+    overlay:addTouchEventListener(function(s,e)
+        if e == 2 then
+            CloseSpeedPicker()
+        end
+    end)
+ 
+    if scene then
+        scene:addChild(overlay, 10000)
+        scene:addChild(speedPickerPanel, 10001)
+    end
+ 
+    local oldClose = CloseSpeedPicker
+    CloseSpeedPicker = function()
+        if overlay and type(overlay.removeFromParent) == "function" then
+            pcall(function() overlay:removeFromParent() end)
+        end
+        if speedPickerPanel and type(speedPickerPanel.removeFromParent) == "function" then
+            pcall(function() speedPickerPanel:removeFromParent() end)
+        end
+        speedPickerPanel = nil
+        overlay = nil
+        CloseSpeedPicker = oldClose
+    end
+end
+ 
+-- BUFF SELECTOR PICKER
+local buffPickerPanel = nil
+local buffOverlay = nil
+ 
+function ShowBuffPicker()
+    if buffPickerPanel then pcall(function() buffPickerPanel:removeFromParent() end) end
+    if buffOverlay then pcall(function() buffOverlay:removeFromParent() end) end
+    
+    local w, h = 940, 2362
+    buffPickerPanel = ccui.Layout:create()
+    buffPickerPanel:setContentSize(cc.size(w, h))
+    buffPickerPanel:setBackGroundColorType(1)
+    buffPickerPanel:setBackGroundColor(cc.c3b(30, 30, 35))
+    buffPickerPanel:setBackGroundColorOpacity(230)
+ 
+    local centerX, centerY = size.width * 0.5, size.height * 0.5
+    buffPickerPanel:setPosition(cc.p(centerX - w * 0.5, centerY - h * 0.5))
+ 
+    local title = ccui.Text:create("Buff Selector", "Arial", 32)
+    title:setColor(cc.c3b(220,220,220))
+    title:setAnchorPoint(cc.p(0.5, 1))
+    title:setPosition(cc.p(w * 0.5, h - 20))
+    buffPickerPanel:addChild(title)
+ 
+    local buffCount = math.min(33, #BUFF_LIST)
+    for i = 1, buffCount do
+        local buff = BUFF_LIST[i]
+        if buff then
+            local btn = ccui.Button:create()
+            btn:setTitleText("")
+            btn:setScale9Enabled(true)
+            btn:setContentSize(cc.size(w - 40, 60))
+            btn:setAnchorPoint(cc.p(0.5, 1))
+            btn:setPosition(cc.p(w * 0.5, h - 60 - ((i-1) * 70)))
+            btn:setColor(cc.c3b(30,30,35))
+ 
+            local txt = ccui.Text:create(buff.id .. " - " .. (buff.note or ""), "Arial", 28)
+            txt:setColor(cc.c3b(200,200,200))
+            txt:setAnchorPoint(cc.p(0.5, 0.5))
+            txt:setPosition(cc.p((w - 40) * 0.5, 30))
+            btn:addChild(txt)
+ 
+            btn:addTouchEventListener(function(s, e)
+                if e == 2 then
+                    _G.BUFF_SELECTED_INDEX = i
+                    if G and G.main_player and G.main_player.add_buff then
+                        pcall(G.main_player.add_buff, G.main_player, buff.id)
+                    end
+                    CloseBuffPicker()
+                end
+            end)
+            buffPickerPanel:addChild(btn)
+        end
+    end
+ 
+    buffOverlay = ccui.Layout:create()
+    buffOverlay:setContentSize(cc.size(size.width, size.height))
+    buffOverlay:setBackGroundColorType(1)
+    buffOverlay:setBackGroundColor(cc.c3b(0,0,0))
+    buffOverlay:setBackGroundColorOpacity(120)
+    buffOverlay:setPosition(cc.p(0,0))
+    buffOverlay:addTouchEventListener(function(s,e)
+        if e == 2 then CloseBuffPicker() end
+    end)
+ 
+    if scene then
+        scene:addChild(buffOverlay, 10000)
+        scene:addChild(buffPickerPanel, 10001)
+    end
+    
+    CloseBuffPicker = function()
+        if buffOverlay and type(buffOverlay.removeFromParent) == "function" then
+            pcall(function() buffOverlay:removeFromParent() end)
+        end
+        if buffPickerPanel and type(buffPickerPanel.removeFromParent) == "function" then
+            pcall(function() buffPickerPanel:removeFromParent() end)
+        end
+        buffPickerPanel = nil
+        buffOverlay = nil
+    end
+end
+ 
+-- Toggles
+_G.GM_ONEHITEXHAUST = _G.GM_ONEHITEXHAUST or false
+_G.GM_DIVEAIR       = _G.GM_DIVEAIR       or false
+ 
+-- Action Timers
+local loot_action, buff_action, recover_action = nil, nil, nil
+local buttonList = {} 
+local selectedIndex = 1
+ 
+-- Forward Declaration
+local function UpdateButtonVisuals() end 
+_G.ForceUpdateVisuals = function() UpdateButtonVisuals() end
+_G.ForceUpdateVisuals = _G.ForceUpdateVisuals or function() end
+ 
+-- --- LOGIC WRAPPERS ---
+ 
+_G.ToggleSpeed = function()
+    _G.SPEED_INDEX = (_G.SPEED_INDEX % #SPEED_LABELS) + 1
+    _G.RunSetSpeed(_G.SPEED_INDEX)
+    UpdateButtonVisuals()
+end
+ 
+local function HandleLoopAction(state, actionRef, func, delaySec)
+    -- default delay if nil/invalid
+    delaySec = tonumber(delaySec) or 5.0
+    if delaySec < 0.05 then delaySec = 0.05 end
+ 
+    -- stop old loop action
+    if actionRef then
+        local scene = cc.Director:getInstance():getRunningScene()
+        if scene then scene:stopAction(actionRef) end
+        actionRef = nil
+    end
+ 
+    -- EXECUTE IMMEDIATELY regardless of Once or Loop
+    if state == 1 or state == 2 then
+        func()
+    end
+ 
+    -- IF LOOP: Start the timer for the *next* execution
+    if state == 2 then
+        local scene = cc.Director:getInstance():getRunningScene()
+        if scene then
+            actionRef = cc.RepeatForever:create(cc.Sequence:create({
+                cc.DelayTime:create(delaySec),
+                cc.CallFunc:create(function()
+                    func()
+                end)
+            }))
+            scene:runAction(actionRef)
+        end
+    end
+ 
+    return actionRef
+end
+ 
+_G.ToggleAutoLootLoop = function()
+    _G.LOOT_STATE = (_G.LOOT_STATE + 1) % 3
+    loot_action = HandleLoopAction(_G.LOOT_STATE, loot_action, _G.RunAutoLoot, _G.LOOT_LOOP_SEC)
+    UpdateButtonVisuals()
+end
+ 
+_G.ToggleAutoBuffLoop = function()
+    _G.BUFF_STATE = (_G.BUFF_STATE + 1) % 3
+    buff_action = HandleLoopAction(_G.BUFF_STATE, buff_action, _G.RunAutoBuff, _G.BUFF_LOOP_SEC)
+    UpdateButtonVisuals()
+end
+ 
+_G.ToggleRecover = function()
+    _G.RECOVER_STATE = (_G.RECOVER_STATE + 1) % 3
+    recover_action = HandleLoopAction(_G.RECOVER_STATE, recover_action, _G.RunRecover, _G.RECOVER_LOOP_SEC)
+    UpdateButtonVisuals()
+end
+ 
+-- --- CYCLE FUNCTIONS ---
+ 
+_G.CycleSpeed = function(dir)
+    _G.SPEED_INDEX = _G.SPEED_INDEX + dir
+    if _G.SPEED_INDEX < 1 then _G.SPEED_INDEX = #SPEED_LABELS end
+    if _G.SPEED_INDEX > #SPEED_LABELS then _G.SPEED_INDEX = 1 end
+    _G.RunSetSpeed(_G.SPEED_INDEX) 
+    UpdateButtonVisuals()
+end
+ 
+_G.CycleState = function(globalVarName, dir, maxState) 
+    local val = _G[globalVarName] + dir
+    if val < 0 then val = maxState end
+    if val > maxState then val = 0 end
+    _G[globalVarName] = val
+    UpdateButtonVisuals()
+end
+ 
+--_G.CycleFOV = function(dir)
+--    _G.FOV_INDEX = _G.FOV_INDEX + dir
+--    if _G.FOV_INDEX < 1 then _G.FOV_INDEX = #FOV_VALUES end
+--    if _G.FOV_INDEX > #FOV_VALUES then _G.FOV_INDEX = 1 end
+--    local cam = package.loaded["hexm.client.debug.gm.gm_commands.gm_camera"] or require("hexm.client.debug.gm.gm_commands.gm_camera")
+--    if cam and cam.test_camera_fov then pcall(cam.test_camera_fov, FOV_VALUES[_G.FOV_INDEX]) end
+--    UpdateButtonVisuals()
+--end
+ 
+_G.ExecuteLoot = function()
+    loot_action = HandleLoopAction(_G.LOOT_STATE, loot_action, _G.RunAutoLoot, _G.LOOT_LOOP_SEC)
+end
+ 
+_G.ExecuteBuff = function()
+    buff_action = HandleLoopAction(_G.BUFF_STATE, buff_action, _G.RunAutoBuff, _G.BUFF_LOOP_SEC)
+end
+ 
+_G.ExecuteRecover = function()
+    recover_action = HandleLoopAction(_G.RECOVER_STATE, recover_action, _G.RunRecover, _G.RECOVER_LOOP_SEC)
+end
+ 
+-- =================================================================================
+-- SECTION 4: NAVIGATION & VISUALS (CONSISTENT THEME FOR ALL BUTTONS)
+-- =================================================================================
+ 
+-- 1. EXACT RGB COLORS
+local C_BG          = cc.c3b(20, 20, 25)      -- Dark Background
+local C_TEXT_OFF    = cc.c3b(192, 192, 192)   -- Inactive (Silver)
+local C_TEXT_ON     = cc.c3b(0, 255, 0)       -- Active (Green)
+local C_SELECTED    = cc.c3b(192, 192, 192)     -- Hover/Selected (Magenta)
+local C_READONLY    = cc.c3b(192, 192, 192)   -- Read-only/value part (Cyan)
+ 
+-- 2. SELECTION LOGIC
+local function UpdateSelection()
+    for i, item in ipairs(buttonList) do
+        local isSelected = (i == selectedIndex)
+ 
+        -- Default to Inactive Color
+        local targetMainColor = C_TEXT_OFF
+ 
+        -- If the option is Active (ON/LOOP/etc), turn Green
+        if item.isActive and item.isActive() then
+            targetMainColor = C_TEXT_ON
+        end
+ 
+        -- Selected overrides main color only
+        if isSelected then
+            targetMainColor = C_SELECTED
+            item.btn:setScale(1.05)
+        else
+            item.btn:setScale(1.0)
+        end
+ 
+        -- We render ALL button text via ccui.Text nodes now
+        if item.mainText then
+            item.mainText:setColor(targetMainColor)
+        end
+ 
+        -- Value part always cyan (only exists on value buttons)
+        if item.valueText then
+            item.valueText:setColor(C_READONLY)
+        end
+    end
+end
+ 
+UpdateButtonVisuals = function()
+    for _, item in ipairs(buttonList) do
+        if item.updateText then item.updateText() end
+    end
+    UpdateSelection()
+end
+ 
+-- =================================================================================
+-- SECTION 5: UI CONSTRUCTION
+-- =================================================================================
+ 
+-- DIMENSIONS (Doubled Size)
+local btnHeight   = 90
+local spacing     = 16
+local headerSpace = 160
+local footerSpace = 0
+local panelWidth  = 640
+ 
+-- Button width should match panel width (small margins)
+local buttonWidth = panelWidth - 60  -- leave 30 px padding each side
+ 
+local MENU_VERSION = "v1"
+ 
+-- Ensure buttonList and selection state exist
+buttonList = buttonList or {}
+selectedIndex = selectedIndex or 1
+ 
+-- Helper to add buttons
+local tempButtons = {}
+ 
+local function queueButton(label, execFunc, cycleFunc, isActiveFunc, dynamicLabelFunc, isValueBtn)
+    local item = {
+        label = label,
+        execFunc = execFunc,
+        cycleFunc = cycleFunc,
+        isActive = isActiveFunc,
+        isValueBtn = isValueBtn,
+        dynamicLabelFunc = dynamicLabelFunc
+    }
+    table.insert(tempButtons, item)
+end
+ 
+-- --- 1. DEFINE BUTTONS ---
+ 
+-- GROUP 1: EXECUTE ONCE (Top)
+-- room id safe wrapper (known working ids)
+-- local rids = {6,7,8,9,10,11,12,13,14,16}  -- uncomment for FINAL FALLBACK:
+ 
+-- GROUP 2: TOGGLES (On/Off)
+-- NOTE: toggles are queued as value-buttons that use cycleFunc to toggle.
+-- This avoids double-toggling when clicking (execFunc must be nil for toggles).
+local function makeToggle(name, varName, onFunc, offFunc)
+    local toggle = function()
+        _G[varName] = not _G[varName]
+        if _G[varName] then
+            pcall(onFunc)
+        else
+            pcall(offFunc)
+        end
+        if UpdateButtonVisuals then pcall(UpdateButtonVisuals) end
+    end
+ 
+    queueButton(
+        name,
+        nil,                                  -- execFunc nil so click uses cycleFunc only
+        function(d) toggle() end,             -- cycleFunc performs the toggle
+        function() return _G[varName] end,
+        function() return name .. " < " .. (_G[varName] and "ON" or "OFF") .. " >" end,
+        true
+    )
+end
+ 
+-- SECTION 5: UI TOGGLE BUTTONS 
+-- One-Hit Kill
+makeToggle("One-Hit Kill", "GM_ONEHITKILL",
+    function() -- enable
+        pcall(_G.GM_EnableOneHit)
+        pcall(_G.ForceUpdateVisuals)
+    end,
+    function() -- disable
+        pcall(_G.GM_DisableOneHit)
+        pcall(_G.ForceUpdateVisuals)
+    end)
+ 
+-- Infinite Stamina
+makeToggle("Inf Stamina", "GM_STAMINA",
+    function() -- enable
+        pcall(_G.GM_EnableStamina)
+        pcall(_G.ForceUpdateVisuals)
+    end,
+    function() -- disable
+        pcall(_G.GM_DisableStamina)
+        pcall(_G.ForceUpdateVisuals)
+    end)
+ 
+-- GROUP 3: CHANGEABLE VALUES (Bottom)
+queueButton("Buff Selector", 
+    function() ShowBuffPicker() end,
+    function(d) _G.BuffMenuDown() end,
+    nil,
+    function() 
+        local buff = BUFF_LIST[_G.BUFF_SELECTED_INDEX] or {}
+        return "Buff Selector < " .. tostring(buff.id or "???") .. " >"
+    end,
+    true)
+	
+ queueButton("Auto Loot", _G.ExecuteLoot, function(d) _G.CycleState("LOOT_STATE", d, 2) end, function() return _G.LOOT_STATE > 0 end,
+    function() return "Auto Loot < " .. STATE_LABELS[_G.LOOT_STATE] .. " >" end, true)
+ 
+queueButton("Recover", _G.ExecuteRecover, function(d) _G.CycleState("RECOVER_STATE", d, 2) end, function() return _G.RECOVER_STATE > 0 end,
+    function() return "Recover < " .. STATE_LABELS[_G.RECOVER_STATE] .. " >" end, true)
+ 
+queueButton("Auto Buffs", _G.ExecuteBuff, function(d) _G.CycleState("BUFF_STATE", d, 2) end, function() return _G.BUFF_STATE > 0 end,
+    function() return "Auto Buffs < " .. STATE_LABELS[_G.BUFF_STATE] .. " >" end, true)
+ 
+-- --- 2. CALCULATE DYNAMIC HEIGHT ---
+local contentHeight = #tempButtons * (btnHeight + spacing)
+local totalHeight   = headerSpace + contentHeight + footerSpace
+ 
+-- --- 3. CREATE PANEL ---
+local panel = ccui.Layout:create()
+ 
+-- IMPORTANT: keep the panel inside screen if it's taller than screen
+local screenW, screenH = size.width, size.height
+panel:setContentSize(cc.size(panelWidth, totalHeight))
+panel:setBackGroundColorType(1)
+panel:setBackGroundColor(C_BG)
+panel:setBackGroundColorOpacity(240)
+ 
+-- Clamp position so you can actually see it
+local startX = 800
+local startY = 1900
+panel:setPosition(cc.p(startX, startY))
+ 
+scene:addChild(panel, 9999)
+_G.GM_MENU = panel
+ 
+-- verify creation succeeded; if not, log failure with version
+local function verify_menu_created()
+    local ok, parent = pcall(function() return _G.GM_MENU and _G.GM_MENU:getParent() end)
+    if not ok or not parent then
+        write_debug(("UI: Menu creation FAILED. Version: %s"):format(MENU_VERSION))
+ 
+        if DEBUG_FILE_ENABLED then
+            pcall(function()
+                local file = io.open(DEBUG_FILE_PATH, "a")
+                if file then
+                    file:write(os.date("%H:%M:%S") .. " MENU CREATION FAILED - Version: " .. MENU_VERSION .. "\n")
+                    file:close()
+                end
+            end)
+        end
+ 
+        return false
+    end
+    return true
+end
+ 
+write_debug(("UI: screen=%dx%d panel=%dx%d buttons=%d"):format(screenW, screenH, panelWidth, totalHeight, #tempButtons))
+ 
+-- --- 4. CREATE HEADER ---
+local headerY = totalHeight - 40
+ 
+local headerLeft = ccui.Text:create("WWM Menu " .. MENU_VERSION, "Arial", 54)
+headerLeft:setColor(cc.c3b(255, 230, 120))
+headerLeft:enableOutline(cc.c4b(0, 255, 0, 255), 2)
+headerLeft:setAnchorPoint(cc.p(0, 1))
+panel:addChild(headerLeft)
+ 
+ 
+local headerRight = ccui.Text:create("", "Arial", 54)
+headerRight:setColor(cc.c3b(140, 20, 20)) -- dark red
+headerRight:setAnchorPoint(cc.p(0, 1))
+panel:addChild(headerRight)
+ 
+-- Center the two texts as a single combined line
+local w1 = headerLeft:getContentSize().width
+local w2 = headerRight:getContentSize().width
+local totalW = w1 + w2
+local startX = (panelWidth - totalW) / 2
+ 
+headerLeft:setPosition(cc.p(startX, headerY))
+headerRight:setPosition(cc.p(startX + w1, headerY))
+ 
+ 
+-- --- 5. CREATE BUTTONS ---
+local startY = totalHeight - headerSpace
+for i, itemData in ipairs(tempButtons) do
+    local b = ccui.Button:create()
+    b:setTitleFontSize(56)
+    b:setScale9Enabled(true)
+    b:setContentSize(cc.size(buttonWidth, btnHeight))
+    b:setColor(C_BG) -- Invisible bg
+ 
+    -- IMPORTANT: we will render our own text for ALL buttons
+    b:setTitleText("")
+ 
+    -- Position: Top Down
+    b:setAnchorPoint(cc.p(0.5, 1))
+    b:setPosition(cc.p(panelWidth / 2, startY - ((i-1) * (btnHeight + spacing))))
+ 
+    if type(b.setTouchEnabled) == "function" then b:setTouchEnabled(true) end
+ 
+    -- Text nodes for consistent coloring
+    local mainTextNode = nil
+    local valueTextNode = nil
+ 
+    if itemData.isValueBtn then
+        -- Main (left) part
+        mainTextNode = ccui.Text:create("", "Arial", 56)
+        mainTextNode:setAnchorPoint(cc.p(0, 0.5))
+        mainTextNode:setPosition(cc.p(30, btnHeight / 2))
+        b:addChild(mainTextNode, 1)
+ 
+        -- Value (right) part: < ... >
+        valueTextNode = ccui.Text:create("", "Arial", 56)
+        valueTextNode:setAnchorPoint(cc.p(1, 0.5))
+        valueTextNode:setPosition(cc.p(buttonWidth - 30, btnHeight / 2))
+        b:addChild(valueTextNode, 1)
+    else
+        -- Normal button: single centered text
+        mainTextNode = ccui.Text:create("", "Arial", 56)
+        mainTextNode:setAnchorPoint(cc.p(0.5, 0.5))
+        mainTextNode:setPosition(cc.p(buttonWidth / 2, btnHeight / 2))
+        b:addChild(mainTextNode, 1)
+    end
+ 
+    -- Store functionality
+    local btnObj = {
+        btn = b,
+        execFunc = itemData.execFunc,
+        cycleFunc = itemData.cycleFunc,
+        isActive = itemData.isActive,
+ 
+        -- expose nodes so SECTION 5 can color them
+        mainText = mainTextNode,
+        valueText = valueTextNode,
+ 
+        updateText = function()
+            local text = itemData.label
+            if itemData.dynamicLabelFunc then
+                text = itemData.dynamicLabelFunc()
+            elseif itemData.isActive then
+                local ok, val = pcall(itemData.isActive)
+                if ok then
+                    text = itemData.label .. (val and " < ON >" or " < OFF >")
+                else
+                    text = itemData.label
+                end
+            end
+ 
+            if valueTextNode then
+                -- Split into 2 parts: "Something " + "<...>"
+                local mainPart, valuePart = text:match("^(.-)%s*(<.*>)%s*$")
+                if not mainPart then
+                    mainPart = text
+                    valuePart = ""
+                end
+                mainTextNode:setString(mainPart)
+                valueTextNode:setString(valuePart)
+            else
+                -- Normal buttons: everything goes into the single main text node
+                mainTextNode:setString(text)
+            end
+        end
+    }
+ 
+    panel:addChild(b)
+    -- Insert into buttonList BEFORE adding the listener so the listener can reference it immediately
+    table.insert(buttonList, btnObj)
+    local idx = #buttonList -- capture the actual index for this button
+ 
+    -- Touch handler: fixed to avoid double-toggle and to ensure immediate label update.
+    b:addTouchEventListener(function(sender, eventType)
+        -- eventType: 0 = began, 1 = moved, 2 = ended (Cocos2d-x convention)
+        if eventType == 0 then
+            -- Touch began: move selection to this button but do not execute
+            selectedIndex = idx
+            UpdateSelection()
+            return true
+        elseif eventType == 2 then
+            -- Touch ended: perform the button action
+            local isSpeedButton = (itemData.label == "Speed")
+ 
+            if isSpeedButton then
+                -- Speed opens a picker via execFunc only
+                if itemData.execFunc then
+                    pcall(itemData.execFunc)
+                end
+            else
+                if itemData.isValueBtn then
+                    -- For value buttons:
+                    -- Prefer cycleFunc for mouse clicks (so toggles and state-cyclers behave correctly).
+                    if itemData.cycleFunc then
+                        pcall(function() itemData.cycleFunc(1) end)
+                    end
+                    -- After cycling, apply execFunc if present (e.g., Invisibility needs ExecuteInvisibility)
+                    if itemData.execFunc then
+                        pcall(itemData.execFunc)
+                    end
+                else
+                    -- Non-value buttons: prefer execFunc; if missing, fall back to cycleFunc
+                    if itemData.execFunc then
+                        pcall(itemData.execFunc)
+                    elseif itemData.cycleFunc then
+                        pcall(function() itemData.cycleFunc(1) end)
+                    end
+                end
+            end
+ 
+            -- Immediately update this button's text (so changeable values and toggles show instantly)
+            pcall(function()
+                if buttonList[idx] and buttonList[idx].updateText then
+                    buttonList[idx].updateText()
+                end
+            end)
+ 
+            -- Refresh all button visuals after action
+            pcall(UpdateButtonVisuals)
+        end
+    end)
+ 
+    -- Store in panel and list already done above
+end
+ 
+-- === Add this block AFTER the loop that creates all buttons (before UpdateButtonVisuals / Initialize) ===
+-- Mouse-move hover selection: single listener on the panel that updates selectedIndex when cursor is over a button.
+pcall(function()
+    -- create a mouse listener (works in Cocos2d-x v3 style)
+    local listener = cc.EventListenerMouse:create()
+    listener:registerScriptHandler(function(event)
+        local x, y = event:getCursorX(), event:getCursorY()
+        -- convert global cursor to panel local coordinates
+        local localPt = panel:convertToNodeSpace(cc.p(x, y))
+        local lx, ly = localPt.x, localPt.y
+ 
+        -- iterate buttons and check bounding boxes
+        for idx, btnObj in ipairs(buttonList) do
+            local btn = btnObj.btn
+            if btn and type(btn.getPosition) == "function" and type(btn.getContentSize) == "function" then
+                local pos = btn:getPosition()
+                local size = btn:getContentSize()
+                -- anchor is (0.5,1) in your code; compute rect accordingly
+                local left = pos.x - (size.width * 0.5)
+                local right = pos.x + (size.width * 0.5)
+                local top = pos.y
+                local bottom = pos.y - size.height
+ 
+                -- localPt is in panel coordinates where origin is bottom-left
+                if lx >= left and lx <= right and ly >= bottom and ly <= top then
+                    if selectedIndex ~= idx then
+                        selectedIndex = idx
+                        UpdateSelection()
+                    end
+                    return -- found the hovered button; stop checking
+                end
+            end
+        end
+    end, cc.Handler.EVENT_MOUSE_MOVE)
+ 
+    -- attach listener to the panel's event dispatcher
+    local dispatcher = panel:getEventDispatcher()
+    if dispatcher and listener then
+        dispatcher:addEventListenerWithSceneGraphPriority(listener, panel)
+    end
+end)
+ 
+-- === UpdateButtonVisuals and UpdateSelection implementations ===
+-- Update visuals for all buttons (text + color)
+function UpdateButtonVisuals()
+    for idx, btnObj in ipairs(buttonList) do
+        -- update text using the per-button updater
+        pcall(function() if btnObj.updateText then btnObj.updateText() end end)
+ 
+        -- color / highlight logic
+        pcall(function()
+            local main = btnObj.mainText
+            local value = btnObj.valueText
+            local isSel = (idx == selectedIndex)
+            local active = false
+            if btnObj.isActive and type(btnObj.isActive) == "function" then
+                local ok, val = pcall(btnObj.isActive)
+                if ok then active = val end
+            end
+ 
+            -- choose colors
+            local colorMain = cc.c3b(220,220,220)
+            local colorValue = cc.c3b(180,180,180)
+ 
+            -- active state color (slightly greenish)
+            if active then
+                colorMain = cc.c3b(140, 220, 140)
+                colorValue = cc.c3b(180, 240, 180)
+            end
+ 
+            -- selection accent: purple (user requested)
+            if isSel then
+                colorMain = cc.c3b(160, 64, 255) -- purple highlight
+            end
+ 
+            if main and type(main.setColor) == "function" then main:setColor(colorMain) end
+            if value and type(value.setColor) == "function" then value:setColor(colorValue) end
+ 
+            -- optionally set outline for selected button (if API available)
+            if main and type(main.enableOutline) == "function" then
+                if isSel then
+                    main:enableOutline(cc.c4b(120, 40, 255, 200), 2)
+                else
+                    main:enableOutline(cc.c4b(0,0,0,0), 0)
+                end
+            end
+        end)
+    end
+end
+ 
+-- Update selection visuals (called on hover / touch begin)
+function UpdateSelection()
+    -- ensure index bounds
+    if selectedIndex < 1 then selectedIndex = 1 end
+    if selectedIndex > #buttonList then selectedIndex = #buttonList end
+    -- refresh visuals (UpdateButtonVisuals handles selection coloring)
+    pcall(UpdateButtonVisuals)
+end
+ 
+-- Initialize
+UpdateButtonVisuals()
+-- =================================================================================
+-- SECTION 6: DRAGGING & MINIMIZE LOGIC
+-- =================================================================================
+ 
+-- Boundary Check
+local function keepPanelInBounds(newX, newY)
+    local pSize = panel:getContentSize()
+    local minX, maxX = 0, size.width - pSize.width
+    local minY, maxY = 0, size.height - pSize.height
+    return math.max(minX, math.min(maxX, newX)), math.max(minY, math.min(maxY, newY))
+end
+ 
+-- === Minimal interaction helpers (define once) ===
+if not _G._GM_MENU_INTERACTION_DEFINED then
+    _G._GM_MENU_INTERACTION_DEFINED = true
+ 
+    function _G.enable_menu_interaction()
+        pcall(function()
+            local p = _G.GM_MENU
+            if not p then return end
+ 
+            -- prefer registerScriptTouchHandler if available
+            if type(p.registerScriptTouchHandler) == "function" then
+                p:registerScriptTouchHandler(function(t, ev)
+                    if ev == 0 then
+                        local loc = t:getLocation()
+                        p.__drag_start = {x = loc.x, y = loc.y}
+                        p.__orig_pos = {x = p:getPositionX(), y = p:getPositionY()}
+                        return true
+                    elseif ev == 1 then
+                        if p.__drag_start and p.__orig_pos then
+                            local loc = t:getLocation()
+                            p:setPosition(p.__orig_pos.x + (loc.x - p.__drag_start.x),
+                                          p.__orig_pos.y + (loc.y - p.__drag_start.y))
+                        end
+                    else
+                        p.__drag_start = nil; p.__orig_pos = nil
+                    end
+                end, false, 0, true)
+                if type(p.setTouchEnabled) == "function" then p:setTouchEnabled(true) end
+                return
+            end
+ 
+            -- fallback to addTouchEventListener style
+            if type(p.addTouchEventListener) == "function" then
+                p:addTouchEventListener(function(sender, ev)
+                    if ev == 0 then
+                        local pos = sender:getTouchBeganPosition()
+                        p.__drag_start = {x = pos.x, y = pos.y}
+                        p.__orig_pos = {x = p:getPositionX(), y = p:getPositionY()}
+                        return true
+                    elseif ev == 1 then
+                        if p.__drag_start and p.__orig_pos then
+                            local pos = sender:getTouchMovePosition()
+                            p:setPosition(p.__orig_pos.x + (pos.x - p.__drag_start.x),
+                                          p.__orig_pos.y + (pos.y - p.__drag_start.y))
+                        end
+                    else
+                        p.__drag_start = nil; p.__orig_pos = nil
+                    end
+                end)
+                if type(p.setTouchEnabled) == "function" then p:setTouchEnabled(true) end
+                return
+            end
+ 
+            -- fallback: try touchLayer if present
+            if p.touchLayer and type(p.touchLayer.registerScriptTouchHandler) == "function" then
+                p.touchLayer:registerScriptTouchHandler(function(t, ev)
+                    if ev == 0 then
+                        local loc = t:getLocation()
+                        p.__drag_start = {x = loc.x, y = loc.y}
+                        p.__orig_pos = {x = p:getPositionX(), y = p:getPositionY()}
+                        return true
+                    elseif ev == 1 then
+                        if p.__drag_start and p.__orig_pos then
+                            local loc = t:getLocation()
+                            p:setPosition(p.__orig_pos.x + (loc.x - p.__drag_start.x),
+                                          p.__orig_pos.y + (loc.y - p.__drag_start.y))
+                        end
+                    else
+                        p.__drag_start = nil; p.__orig_pos = nil
+                    end
+                end, false, 0, true)
+                if type(p.touchLayer.setTouchEnabled) == "function" then p.touchLayer:setTouchEnabled(true) end
+            end
+        end)
+    end
+ 
+    function _G.disable_menu_interaction()
+        pcall(function()
+            local p = _G.GM_MENU
+            if not p then return end
+            if type(p.unregisterScriptTouchHandler) == "function" then p:unregisterScriptTouchHandler() end
+            if type(p.removeTouchEventListener) == "function" then
+                -- best-effort: remove any listener (API may vary)
+                p:removeTouchEventListener()
+            end
+            if type(p.setTouchEnabled) == "function" then p:setTouchEnabled(false) end
+            if p.touchLayer and type(p.touchLayer.setTouchEnabled) == "function" then p.touchLayer:setTouchEnabled(false) end
+            p.__drag_start = nil; p.__orig_pos = nil
+        end)
+    end
+end
+ 
+-- Attach interaction (initial)
+_G.GM_MENU = panel
+if type(_G.enable_menu_interaction) == "function" then pcall(_G.enable_menu_interaction) end
+ 
+-- Minimize Button
+local btn_minimize = ccui.Button:create()
+btn_minimize:setTitleText("−")
+btn_minimize:setTitleFontSize(52) -- Font 26 -> 52
+btn_minimize:setTitleColor(cc.c3b(255, 255, 120))
+-- Position offset doubled (65 -> 130, 25 -> 50)
+btn_minimize:setPosition(cc.p(panelWidth - 130, totalHeight - 50))
+panel:addChild(btn_minimize)
+ 
+-- Keybind Info (Floating Button when Minimized)
+keybindInfo = ccui.Button:create()
+keybindInfo:setTitleText(" Click to Open ")
+keybindInfo:setTitleFontSize(48) -- Font 24 -> 48
+keybindInfo:setTitleColor(cc.c3b(200,200,255))
+keybindInfo:setVisible(false)
+keybindInfo:setPosition(cc.p(panelWidth/2, 50)) -- Height doubled (25 -> 50)
+panel:addChild(keybindInfo)
+ 
+-- Minimize/Restore Logic (updated to hide header and footer)
+local function ToggleMinimize()
+    isMinimized = not isMinimized
+    if isMinimized then
+        -- save original size and positions
+        originalSize = panel:getContentSize()
+        panel:setContentSize(cc.size(panelWidth, 100)) -- Minimized height
+ 
+        -- hide all buttons
+        for _, item in ipairs(buttonList) do item.btn:setVisible(false) end
+ 
+        -- hide header and footer elements
+        if headerLeft and type(headerLeft.setVisible) == "function" then headerLeft:setVisible(false) end
+        if headerRight and type(headerRight.setVisible) == "function" then headerRight:setVisible(false) end
+        if div and type(div.setVisible) == "function" then div:setVisible(false) end
+        if div2 and type(div2.setVisible) == "function" then div2:setVisible(false) end
+        if lblLeft and type(lblLeft.setVisible) == "function" then lblLeft:setVisible(false) end
+        if lblRight and type(lblRight.setVisible) == "function" then lblRight:setVisible(false) end
+        if closeBtn and type(closeBtn.setVisible) == "function" then closeBtn:setVisible(false) end
+ 
+        -- show small keybind info and update minimize button appearance/position
+        keybindInfo:setVisible(true)
+        btn_minimize:setTitleText("⬜")
+        btn_minimize:setPosition(cc.p(panelWidth - 130, 50))
+ 
+        -- disable interaction while minimized
+        if type(_G.disable_menu_interaction) == "function" then pcall(_G.disable_menu_interaction) end
+    else
+        -- restore panel size
+        panel:setContentSize(originalSize)
+ 
+        -- restore buttons
+        for _, item in ipairs(buttonList) do item.btn:setVisible(true) end
+ 
+        -- restore header and footer elements
+        if headerLeft and type(headerLeft.setVisible) == "function" then headerLeft:setVisible(true) end
+        if headerRight and type(headerRight.setVisible) == "function" then headerRight:setVisible(true) end
+        if div and type(div.setVisible) == "function" then div:setVisible(true) end
+        if div2 and type(div2.setVisible) == "function" then div2:setVisible(true) end
+        if lblLeft and type(lblLeft.setVisible) == "function" then lblLeft:setVisible(true) end
+        if lblRight and type(lblRight.setVisible) == "function" then lblRight:setVisible(true) end
+        if closeBtn and type(closeBtn.setVisible) == "function" then closeBtn:setVisible(true) end
+ 
+        -- hide keybind info and restore minimize button appearance/position
+        keybindInfo:setVisible(false)
+        btn_minimize:setTitleText("−")
+        btn_minimize:setPosition(cc.p(panelWidth - 130, totalHeight - 50))
+ 
+        -- re-enable interaction when restored
+        if type(_G.enable_menu_interaction) == "function" then pcall(_G.enable_menu_interaction) end
+    end
+end
+ 
+btn_minimize:addTouchEventListener(function(s,e) if e == 2 then ToggleMinimize() end end)
+keybindInfo:addTouchEventListener(function(s,e) if e == 2 then ToggleMinimize() end end)
+ 
+-- Close Button (minimize instead of destroy)
+local closeBtn = ccui.Button:create()
+closeBtn:setTitleText("X")
+closeBtn:setTitleFontSize(48) -- Font 24 -> 48
+closeBtn:setTitleColor(cc.c3b(255, 80, 80))
+-- Position offset doubled (25 -> 50)
+closeBtn:setPosition(cc.p(panelWidth - 50, totalHeight - 50))
+ 
+closeBtn:addTouchEventListener(function(s, e)
+    if e == 2 then
+        pcall(function()
+            -- Hide the panel instead of removing it so JS hotkey can restore it later
+            if panel and type(panel.setVisible) == "function" then
+                panel:setVisible(false)
+            end
+ 
+            -- Disable interaction so the hidden panel doesn't capture input
+            if type(_G.disable_menu_interaction) == "function" then pcall(_G.disable_menu_interaction) end
+ 
+            -- Keep the global reference intact so Toggle/Show can bring it back
+ 
+            -- Trigger any visual refresh helper if present
+            if _G and type(_G.ForceUpdateVisuals) == "function" then
+                pcall(_G.ForceUpdateVisuals)
+            end
+        end)
+    end
+end)
+ 
+panel:addChild(closeBtn)
+ 
+-- Toggle helper that JS can call (ensures interaction is re-enabled when showing)
+_G.ToggleGMMenu = _G.ToggleGMMenu or function()
+    if not _G.GM_MENU then
+        if type(_G.CreateGMMenu) == "function" then pcall(_G.CreateGMMenu) end
+    end
+    if not _G.GM_MENU then return end
+ 
+    local ok, vis = pcall(function() return _G.GM_MENU:isVisible() end)
+    if ok and vis then
+        pcall(function()
+            _G.GM_MENU:setVisible(false)
+            if type(_G.disable_menu_interaction) == "function" then pcall(_G.disable_menu_interaction) end
+        end)
+    else
+        pcall(function()
+            _G.GM_MENU:setVisible(true)
+            if type(_G.enable_menu_interaction) == "function" then pcall(_G.enable_menu_interaction) end
+            if _G.GM_MENU.getParent and _G.GM_MENU:getParent().reorderChild then
+                local parent = _G.GM_MENU:getParent()
+                pcall(function() parent:reorderChild(_G.GM_MENU, 9999) end)
+            end
+            if type(_G.ForceUpdateVisuals) == "function" then pcall(_G.ForceUpdateVisuals) end
+        end)
+    end
+end
+ 
+-- Initialize Visuals
+UpdateButtonVisuals()
+write_debug("Menu Created. Size: " .. panelWidth .. "x" .. totalHeight)
+ 
+-- Final Success Report
+if DEBUG_FILE_ENABLED then
+    pcall(function()
+        local file = io.open(DEBUG_FILE_PATH, "a")
+        if file then
+            file:write(os.date("%H:%M:%S") .. " === SCRIPT COMPLETED SUCCESSFULLY (Menu " .. MENU_VERSION .. ") ===\n")
+            file:close()
+        end
+    end)
+end

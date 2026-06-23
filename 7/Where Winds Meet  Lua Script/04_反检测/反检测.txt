@@ -1,0 +1,26 @@
+Originally Posted by vipluckystar View Post
+For more secure your DLL, apply the following techniques:
+
+Level 1 – Polymorphic string obfuscation
+* Encrypt all sensitive strings at compile-time with per-string random seeds.
+* No fixed key, no plaintext strings in binary.
+
+Level 2 – Lazy decryption & memory wiping
+* Decrypt strings only when needed.
+* Immediately wipe plaintext from memory after use.
+
+Level 3 – Split & recombine payloads
+* Never store a full Lua payload in memory.
+* Build scripts dynamically from small obfuscated fragments.
+
+Additional stealth measures
+* Inject only during valid Lua VM execution (runtime hook).
+* Use dynamic chunk names.
+* Hide DLL from PEB loader lists.
+* Cleanly unhook and stop threads on exit.
+
+
+
+I'd be careful relying on 'Hiding from PEB'
+
+I believe the game doesn't care about the PEB(so far it suggested that). Instead, it looks at the VAD Tree. If you have a memory page marked as executable (either RX or RWX) that isn't backed by a valid file on disk, you are basically lighting yourself on fire to the driver, regardless of whether you unlinked from the PEB.

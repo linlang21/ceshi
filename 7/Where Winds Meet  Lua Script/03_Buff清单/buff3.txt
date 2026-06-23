@@ -1,0 +1,232 @@
+    -- Shared buff list used by AutoBuff, PermanentBuffs, and RemoveBuffs
+    -- Fields:
+    --   id     : buff id (number)
+    --   note   : buff description
+    --   auto   : apply in Auto Buff
+    --   perm   : apply in Permanent Buffs
+    --   remove : Remove Buffs (if false, removal will skip)
+    local BUFF_LIST = {
+    -- Buff list
+-- ===== DAMAGE / OFFENSE =====
+--{ id = 30302, note = "Increase Damage", auto = true, perm = false, remove = true }, ---- MINIMAL AURA VISUAL ----
+--{ id = 30314, note = "Drunkenness: +DMG 25%, Skill Lifesteal 20%", auto = true, perm = false, remove = true }, ---- MINIMAL AURA VISUAL ----
+{ id = 30028, note = "Concentration: Increases damage (10 seconds)", auto = true, perm = false, remove = true },
+{ id = 107031, note = "Increase Damage (1/5 stacks)", auto = true, perm = false, remove = true },
+{ id = 107031, note = "Increase Damage (2/5 stacks)", auto = true, perm = false, remove = true },
+{ id = 107031, note = "Increase Damage (3/5 stacks)", auto = true, perm = false, remove = true },
+{ id = 107031, note = "Increase Damage (4/5 stacks)", auto = true, perm = false, remove = true },
+{ id = 107031, note = "Increase Damage (5/5 stacks)", auto = true, perm = false, remove = true },
+{ id = 102604, note = "Dodge Buff: +10% dmg and move speed 20%", auto = true, perm = false, remove = true },
+{ id = 120007, note = "10% Physical Penetration", auto = true, perm = false, remove = true },
+{ id = 120009, note = "+12% Heavy atk", auto = true, perm = false, remove = true },
+{ id = 120010, note = "+12% Light atk", auto = true, perm = false, remove = true },
+{ id = 102456, note = "Light and Heavy Atk 20%", auto = true, perm = false, remove = true },
+{ id = 102400, note = "Atk boost 4%", auto = true, perm = false, remove = true },
+{ id = 102801, note = "Dmg 10% 10s", auto = true, perm = false, remove = true },
+{ id = 102802, note = "Dmg 10% 5s", auto = true, perm = false, remove = true },
+--{ id = 200093, note = "+10% HP-based damage", auto = true, perm = false, remove = true }, ------------- OVERLAP WITH 200123, "+25% HP-based damage"
+--{ id = 200094, note = "+15% HP-based damage", auto = true, perm = false, remove = true }, ------------- OVERLAP WITH 200123, "+25% HP-based damage"
+--{ id = 200095, note = "+20% HP-based damage", auto = true, perm = false, remove = true }, ------------- OVERLAP WITH 200123, "+25% HP-based damage"
+{ id = 200123, note = "+25% HP-based damage", auto = true, perm = false, remove = true }, ------------- ONLY USE THIS
+{ id = 102404, note = "Charged Skill DMG 10%", auto = true, perm = false, remove = true },
+{ id = 102454, note = "Charged Skill DMG 20%", auto = true, perm = false, remove = true },
+{ id = 102504, note = "Charge Enhancement: Increases Charged Skills' damage by 15% and reduces their Endurance cost by 50%", auto = true, perm = false, remove = true },
+{ id = 102455, note = "Martial Skill 13%", auto = true, perm = false, remove = true },
+ 
+ 
+-- ===== DEFENSE / HEALING =====
+--{ id = 200059, note = "Shield: No Desc", auto = true, perm = false, remove = true }, ---- VISUAL ----
+--{ id = 200083, note = "Shield: No Desc", auto = true, perm = false, remove = true }, ---- VISUAL ----
+{ id = 30303, note = "Increase Defense", auto = true, perm = false, remove = true },
+{ id = 30310, note = "Iron Body (1/3 Stacks)", auto = true, perm = false, remove = true }, ---- MINIMAL GLOWING BODY VISUAL ----
+{ id = 30310, note = "Iron Body (2/3 Stacks)", auto = true, perm = false, remove = true }, ---- MINIMAL GLOWING BODY VISUAL ----
+{ id = 30310, note = "Iron Body (3/3 Stacks)", auto = true, perm = false, remove = true }, ---- MINIMAL GLOWING BODY VISUAL ----
+--{ id = 200099, note = "Shield 25% of max HP", auto = true, perm = false, remove = true }, ---- VISUAL ----
+{ id = 30333, note = "DMG Reduction 30%", auto = true, perm = false, remove = true },
+{ id = 120013, note = "DMG Reduction 40%", auto = true, perm = false, remove = true },
+{ id = 30334, note = "DMG Reduction 50%", auto = true, perm = false, remove = true },
+{ id = 30406, note = "DMG Reduction 60%", auto = true, perm = false, remove = true },
+{ id = 200086, note = "DMG Reduction 80% (HP Based)", auto = true, perm = false, remove = true },
+--{ id = 30372, note = "Unrivaled, DMG Reduction 90%, Immune QI DMG", auto = true, perm = false, remove = true }, ---- MINIMAL AURA VISUAL ----
+--{ id = 30366, note = "Shield: Negates 3 Attacks, Immune to QI DMG", auto = true, perm = false, remove = true }, ---- VISUAL ----
+{ id = 30407, note = "Untargettable", auto = true, perm = false, remove = true },
+{ id = 70184, note = "Defense can resist full screen damage VIP", auto = true, perm = false, remove = true },
+--{ id = 200071, note = "Super Armor: Immune To Stagger, HP-based Damage 20%", auto = true, perm = false, remove = true }, ---- VISUAL ----
+{ id = 102602, note = "+10% DMG and DMG Reduction 30%", auto = true, perm = false, remove = true },
+{ id = 102459, note = "Phys Res 20", auto = true, perm = false, remove = true },
+ 
+{ id = 200035, note = "Rainy Day: No Desc (HP regen?)", auto = true, perm = false, remove = true },
+{ id = 200036, note = "Apricot Blossoms: : No Desc (HP regen?)", auto = true, perm = false, remove = true },
+ 
+ 
+-- ===== Attributes / EXTRAS =====
+--{ id = 30005, note = "Immune To Control", auto = true, perm = false, remove = true }, ---- GLOWING HAND AND SPARKLES VISUAL ----
+{ id = 102704, note = "Increase Deflect window 50%", auto = true, perm = false, remove = true },
+{ id = 102457, note = "MAX HP +10%", auto = true, perm = false, remove = true },
+{ id = 102407, note = "Max HP 5%", auto = true, perm = false, remove = true },
+{ id = 102703, note = "Dodge invincible + 50%", auto = true, perm = false, remove = true },
+{ id = 102701, note = "Reduce cooldown 20%", auto = true, perm = false, remove = true },
+{ id = 102702, note = "Reduce endurance cost 20%", auto = true, perm = false, remove = true },
+{ id = 102506, note = "Qi Breaking Enhancement: Increases Qi damage by 10% and Execute Skill damage by 20%", auto = true, perm = false, remove = true },
+{ id = 102505, note = "Parry Enhancement: Successful parries no longer consume Endurance. Increases DMG Reduction by a further 10%", auto = true, perm = false, remove = true },
+{ id = 102503, note = "After a successful deflection, reduces all damage taken by 30% and increases all damage dealt by 10%", auto = true, perm = false, remove = true },
+ 
+{ id = 102605, note = "BellStrike 200", auto = true, perm = false, remove = true },
+--{ id = 102607, note = "Silkbind 200", auto = true, perm = false, remove = true },
+--{ id = 102606, note = "Stone split 200", auto = true, perm = false, remove = true },
+{ id = 109039, note = "Bamboocut + 10%", auto = true, perm = false, remove = true },
+{ id = 102401, note = "All Attribute Atk +15%", auto = true, perm = false, remove = true },
+{ id = 102451, note = "All Attribute Atk +30%", auto = true, perm = false, remove = true },
+ 
+{ id = 120004, note = "8% crit rate bonus", auto = true, perm = false, remove = true },
+{ id = 102402, note = "Crit Rate 6% Crit Dmg 10%", auto = true, perm = false, remove = true },
+{ id = 102501, note = "Precision hit: Crit Rate 10% Crit Dmg 20%", auto = true, perm = false, remove = true },
+{ id = 102501, note = "Precision hit + Crit Rate 10% Crit Dmg 20%", auto = true, perm = false, remove = true },
+{ id = 102452, note = "Precision hit: Crit Rate 12% Crit Dmg 20%", auto = true, perm = false, remove = true },
+{ id = 109024, note = "Lone Quill: Critical damage + 10%", auto = true, perm = false, remove = true },
+{ id = 109025, note = "Illusion: Critical damage + 10%", auto = true, perm = false, remove = true },
+{ id = 109014, note = "Heart of Four Seasons: Crit Rate 20%", auto = true, perm = false, remove = true },
+ 
+{ id = 102403, note = "Affinity rate 2% Affinity Damage 5%", auto = true, perm = false, remove = true },
+{ id = 102453, note = "Affinity 4% Affinity Dmg 10%", auto = true, perm = false, remove = true },
+{ id = 102507, note = "Affinity Boost: Increases Affinity Rate by 5% and Affinity DMG by 10%", auto = true, perm = false, remove = true },
+{ id = 107011, note = "Jadeware: +Affinity 10%, +Affinity DMG 20%", auto = true, perm = false, remove = true },
+{ id = 109015, note = "Will of Four Seasons: Affinity rate + 15%", auto = true, perm = false, remove = true },
+ 
+-- ===== Crazy buffs =====
+{ id = 1053017, note = "Damage Boost Gain 200% damage boost", auto = true, perm = false, remove = true },
+--{ id = 1053018, note = "Damage Boost Gain 400% damage boost", auto = true, perm = false, remove = true },
+--{ id = 1053019, note = "Damage Boost Gain 800% damage boost", auto = true, perm = false, remove = true },
+ 
+--{ id = 1053023, note = "Damage Boost Gain 200% damage boost", auto = true, perm = false, remove = true },
+--{ id = 1053024, note = "Damage Boost Gain 400% damage boost", auto = true, perm = false, remove = true },
+--{ id = 1053025, note = "Damage Boost Gain 800% damage boost", auto = true, perm = false, remove = true },
+--{ id = 1053023, note = "Damage Boost Gain 200% damage boost", auto = true, perm = false, remove = true },
+--{ id = 1053026, note = "Damage Boost Gain 16x damage boost", auto = true, perm = false, remove = true },
+ 
+-------------------------------------------------------------------------------
+--------------- ////////////// BUFFS LIST ////////////// ---------------
+-------------------------------------------------------------------------------
+ 
+{ id = 30379, note = "DMG Reduction 30%", auto = true, perm = false, remove = true },
+--{ id = 30376, note = "DMG Reduction 40%", auto = true, perm = false, remove = true },
+--{ id = 109927, note = "DMG Reduction 80%", auto = true, perm = false, remove = true },
+ 
+{ id = 70108, note = "Remove Silence status", auto = true, perm = false, remove = true },
+--{ id = 70025, note = "Immune To Parry", auto = true, perm = false, remove = true },
+{ id = 70116, note = "Immune To Silence + Stun", auto = true, perm = false, remove = true },
+{ id = 70122, note = "Immune To Slow", auto = true, perm = false, remove = true },
+{ id = 102381, note = "Immune To Fall Damage", auto = true, perm = false, remove = true },
+--{ id = 70138, note = "Birth: Lvl 3 (Revive?)", auto = true, perm = false, remove = true },
+ 
+ 
+{ id = 109920, note = "Affinity rate + 15%", auto = true, perm = false, remove = true },
+{ id = 109921, note = "Crit rate 20%", auto = true, perm = false, remove = true },
+{ id = 109922, note = "Dmg deal 20%", auto = true, perm = false, remove = true },
+{ id = 109923, note = "Atk 20%", auto = true, perm = false, remove = true },
+{ id = 109925, note = "Affi 3% crit 6% (1/5 Stacks)", auto = true, perm = false, remove = true },
+{ id = 109925, note = "Affi 3% crit 6% (2/5 Stacks)", auto = true, perm = false, remove = true },
+{ id = 109925, note = "Affi 3% crit 6% (3/5 Stacks)", auto = true, perm = false, remove = true },
+{ id = 109925, note = "Affi 3% crit 6% (4/5 Stacks)", auto = true, perm = false, remove = true },
+{ id = 109925, note = "Affi 3% crit 6% (5/5 Stacks)", auto = true, perm = false, remove = true },
+ 
+ 
+{ id = 200005, note = "Agile: Movement Speed +10%", auto = true, perm = false, remove = true },
+{ id = 200006, note = "-10% chance to receive status ailments", auto = true, perm = false, remove = true },
+{ id = 200102, note = "Regen 0.7% Per Stack (1/5 Stack)", auto = true, perm = false, remove = true },
+{ id = 200102, note = "Regen 0.7% Per Stack (2/5 Stack)", auto = true, perm = false, remove = true },
+{ id = 200102, note = "Regen 0.7% Per Stack (3/5 Stack)", auto = true, perm = false, remove = true },
+{ id = 200102, note = "Regen 0.7% Per Stack (4/5 Stack)", auto = true, perm = false, remove = true },
+{ id = 200102, note = "Regen 0.7% Per Stack (5/5 Stack)", auto = true, perm = false, remove = true },
+ 
+ 
+{ id = 103007, note = "Phy atk down, Bellstike up", auto = true, perm = false, remove = true },
+{ id = 103008, note = "Phy atk down, Stonesplit up", auto = true, perm = false, remove = true },
+ 
+ 
+ 
+-- ===== PERMANENT INSTANCE BUFF (WORKS IN Co-op and Trials) =====
+{ id = 109040, note = "Fledgling: HP 15%, CRI 3%, Affinity Rate 2%, Parrying + 10% DMG Reduction", auto = true, perm = false, remove = true },
+{ id = 109041, note = "Swallow Companion: HP 5%, CRI 3%, Affinity Rate 2%", auto = true, perm = false, remove = true },
+ 
+ 
+ 
+---------------------------------------------------------------------------------------------------------------
+---------------- ////////////// FOOD BUFFS (NOT STACKABLE, ACTIVATE 1 AT A TIME) ////////////// ---------------
+---------------------------------------------------------------------------------------------------------------
+ 
+--{ id = 104051, note = "Hunting: Hunting Critical Rate +10% (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 104033, note = "Mining: Mining Critical Rate +10% (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 104045, note = "Angling: Fishing Critical Rate +10% (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 104039, note = "Logging: Logging Critical Rate +20% (Series does not stack)", auto = true, perm = false, remove = true },
+{ id = 104027, note = "Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 104021, note = "Forge 4: Increases Forging 4 Critical Rate by 1% (Series does not stack)", auto = true, perm = false, remove = true },
+ 
+ 
+ 
+ 
+-----------------------------------------------------------------------------------------------------------------
+---------------- ////////////// SCROLL BUFFS (NOT STACKABLE, ACTIVATE 1 AT A TIME) ////////////// ---------------
+-----------------------------------------------------------------------------------------------------------------
+ 
+--{ id = 109604, note = "Scroll & Script: Dodge cost -5%, Speed +5%. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109605, note = "Scroll & Script: Interruption resistance +20%. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109606, note = "Scroll & Script: Restore endurance boost 5%. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109607, note = "Scroll & Script: Below 30% HP, deal/take +20% dmg. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109608, note = "Scroll & Script: Below 30% HP, deal/receive -20% dmg. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109609, note = "Scroll & Script: -20% dmg taken during Crowd Control. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109610, note = "Scroll & Script: Sac 20% HP for +8% Blade dmg. (Series does not stack)", auto = true, perm = false, remove = true },
+--{ id = 109611, note = "Scroll & Script: Sac 20% HP for +8% Exotic weapon dmg. (Series does not stack)", auto = true, perm = false, remove = true },
+{ id = 109612, note = "Scroll & Script: Sac 30% Def for +10% Crit/Affi DMG. (Series does not stack)", auto = true, perm = false, remove = true },
+ 
+ 
+ 
+ 
+ 
+----------------------------------------------------------------------------------------------------------
+---------------- ////////////// BUNS BUFFS, CHOOSE AS YOU LIKE (STACKABLE) ////////////// ----------------
+----------------------------------------------------------------------------------------------------------
+ 
+{ id = 109550, note = "Spicy Bun: lose Qi over time; +20% damage; hitting restores 3 Qi", auto = true, perm = false, remove = true },
+{ id = 109551, note = "Meat Bun: +15% skill damage when HP>90%; +7.5% HP drain when HP<50%", auto = true, perm = false, remove = true },
+{ id = 109552, note = "Coriander Bun: +5% skill damage; +5% move speed; -10% physical defense", auto = true, perm = false, remove = true },
+{ id = 109553, note = "Mint Bun: Active skill cooldown -20%; Endurance Recovery +30%", auto = true, perm = false, remove = true },
+{ id = 109554, note = "Big Bun: +10% DMG Reduction when HP shield present; convert remaining shield to HP on expire", auto = true, perm = false, remove = true },
+{ id = 109555, note = "Wasabi Bun: Enrage on damage: +15% damage; +5% affinity; -20% physical defense", auto = true, perm = false, remove = true },
+{ id = 109556, note = "Mega Bun: +15% Max HP; +20% Max Endurance; -10% damage", auto = true, perm = false, remove = true },
+{ id = 109557, note = "Intestine Bun: +25% healing and healing received; doubled when HP<30%", auto = true, perm = false, remove = true },
+{ id = 109558, note = "Donkey Bun: Healing restores extra 2% of target's Max HP and Qi", auto = true, perm = false, remove = true },
+{ id = 109559, note = "Energy Bun: Reduces damage >30% Max HP by 50%; increases damage taken next 5s by 20%; 5min CD", auto = true, perm = false, remove = true },
+{ id = 109560, note = "Wasabi Overload: +15% damage; +5% affinity; -20% physical defense", auto = true, perm = false, remove = true },
+ 
+----------------------------------------------------------------------------------------------------------
+---------------- ////////////// Testing section ////////////// ----------------
+----------------------------------------------------------------------------------------------------------
+ 
+--Aviod Illness
+ 
+	--{ id = 380021, note = "Keep the body healthy and fit to become immune to falling damage", auto = true, perm = false, remove = true },
+	--{ id = 380022, note = "Keep the body healthy and fit to become immune to slight fever", auto = true, perm = false, remove = true },
+	--{ id = 380023, note = "Alert the mind to become immune to miasma", auto = true, perm = false, remove = true },
+	--{ id = 380024, note = "Improve constitution to become immune to beast venom", auto = true, perm = false, remove = true },
+	
+	
+--Others
+	{ id = 400047, note = "Able to follow-up after normal attacks", auto = true, perm = false, remove = true },
+	{ id = 400091, note = "Apply Fire Oil on the weapon to add bonus effects to attacks - Doesn't work all time", auto = true, perm = false, remove = true },
+	{ id = 410035, note = "Casting Light Attack summons a rodent to emerge from the ground to perform one attack. Additional rodents will also automatically attack nearby enemies", auto = true, perm = false, remove = true },
+	{ id = 103002, note = "Bellstrike Attack +1,000", auto = true, perm = false, remove = true },
+	
+ 
+-- Recovery Buffs
+    { id = 70141, note = "recover buff", auto = true, perm = false, remove = true },
+    { id = 70063, note = "stamina/full recovery", auto = true, perm = false, remove = true },
+ 
+    -- Food Buffs (choose only 1)
+    --{ id = 109501, note = "Food Effect: Physical Attack +10-20 (Series does not stack)", auto = true, perm = false, remove = true },
+    --{ id = 109502, note = "Food Effect: Max HP +1,100 (Series does not stack)", auto = true, perm = false, remove = true },
+    --{ id = 109503, note = "Food Effect: Physical Attack +20-40 (Series does not stack)", auto = true, perm = false, remove = true },
+    --{ id = 109504, note = "Food Effect: Max HP +2,300 (Series does not stack)", auto = true, perm = false, remove = true },
+    --{ id = 109505, note = "Food effect boost 60-120 atk (Series does not stack)", auto = true, perm = false, remove = true },
+    { id = 109506, note = "Food Effect: Max HP +5600 (Series does not stack)", auto = true, perm = false, remove = true },
+    }

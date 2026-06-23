@@ -1,0 +1,109 @@
+-- Configuration flag
+RUN_FALLBACK_SWEEP = false        -- must be true or "force" to allow fallback to run
+FALLBACK_THRESHOLD = 0            -- run fallback when removed_count <= this value
+ 
+-- Fallback sweep function (only run as a last resort)
+local function fallback_sweep()
+    pcall(function()
+        collectgarbage("collect")
+        local mp = G and G.main_player
+        if not mp then return end
+ 
+        local ok, act = pcall(require, "hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+        local use_act = ok and act and act.rm_buff
+ 
+        write_debug("[RemoveBuff] Starting fallback sweep 30000 -> 201000; using act.rm_buff=" .. tostring(use_act))
+ 
+        local start_id, end_id = 30000, 201000
+ 
+        -- Tunable sizes
+        local chunk_size = 5        -- inner loop size to keep each iteration small
+        local group_size = 50      -- number of IDs processed before a pause
+        local pause_seconds = 2      -- pause between groups to avoid freezing
+        local removed_total = 0
+ 
+        -- portable sleep helper without os.execute
+        local function sleep(sec)
+            if not sec or sec <= 0 then return end
+ 
+            -- 1) scheduler.yield if available; approximate seconds by repeated yields
+            if type(scheduler) == "table" and type(scheduler.yield) == "function" then
+                local t0 = os.time()
+                while os.time() - t0 < sec do
+                    scheduler.yield()
+                end
+                return
+            end
+ 
+            -- 2) LuaSocket if available
+            local ok_socket, socket = pcall(require, "socket")
+            if ok_socket and socket and type(socket.sleep) == "function" then
+                socket.sleep(sec)
+                return
+            end
+ 
+            -- 3) coroutine.yield if running inside a coroutine; approximate seconds
+            if coroutine and type(coroutine.yield) == "function" then
+                local t0 = os.time()
+                while os.time() - t0 < sec do
+                    coroutine.yield()
+                end
+                return
+            end
+ 
+            -- 4) fallback busy-wait using os.clock (non-blocking as possible)
+            local t0 = os.clock()
+            while os.clock() - t0 < sec do
+                -- small no-op to avoid tight spin; if coroutine.yield exists, yield briefly
+                if coroutine and type(coroutine.yield) == "function" then
+                    coroutine.yield()
+                end
+            end
+        end
+ 
+        -- iterate by groups to allow pauses between large ranges
+        for group_base = start_id, end_id, group_size do
+            local group_top = math.min(group_base + group_size - 1, end_id)
+            -- process group in small chunks to avoid long blocking loops
+            for base = group_base, group_top, chunk_size do
+                local top = math.min(base + chunk_size - 1, group_top)
+                local removed_in_chunk = 0
+ 
+                for i = base, top do
+                    local ok1 = false
+                    if mp.remove_buff then
+                        ok1 = pcall(mp.remove_buff, mp, i)
+                    end
+                    if use_act then
+                        pcall(act.rm_buff, i)
+                    end
+                    if ok1 then removed_in_chunk = removed_in_chunk + 1 end
+                end
+ 
+                removed_total = removed_total + removed_in_chunk
+                write_debug(string.format("[RemoveBuff] Processed %d-%d removed=%d total=%d", base, top, removed_in_chunk, removed_total))
+                collectgarbage("collect")
+            end
+ 
+            -- pause between groups to avoid freezing
+            write_debug(string.format("[RemoveBuff] Completed group %d-%d, pausing %ds", group_base, group_top, pause_seconds))
+            sleep(pause_seconds)
+        end
+ 
+        write_debug("[RemoveBuff] Fallback sweep completed. Total removed (mp.remove_buff successes): " .. removed_total)
+        collectgarbage("collect")
+    end)
+end
+ 
+-- decide whether to run fallback
+-- Enforce RUN_FALLBACK_SWEEP as the master switch: fallback will not run unless explicitly enabled
+if not (RUN_FALLBACK_SWEEP == true or RUN_FALLBACK_SWEEP == "force") then
+    write_debug(string.format("[RemoveBuffs] Skipping fallback sweep because RUN_FALLBACK_SWEEP=%s", tostring(RUN_FALLBACK_SWEEP)))
+else
+    if removed_count <= FALLBACK_THRESHOLD then
+        write_debug(string.format("[RemoveBuffs] Running fallback sweep because removed_count=%d <= %d", removed_count, FALLBACK_THRESHOLD))
+        fallback_sweep()
+    else
+        write_debug(string.format("[RemoveBuffs] Not running fallback sweep because removed_count=%d > %d", removed_count, FALLBACK_THRESHOLD))
+    end
+end

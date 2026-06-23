@@ -1,0 +1,19 @@
+local BUFF_LIST = { 
+    ——防御增益  
+    { id = 30372 , note = "无敌，减少90%真实伤害" , auto = true ,   perm = true ,   remove = true },        
+    { id = 200086 , note = "80%伤害免疫（基于生命值）" , auto = true ,   perm = true ,   remove = true },        
+    { id = 30366 , note = "完全阻止接下来的 3 次点击" , auto = true ,   perm = true ,   remove = true },        
+    { id = 30310 , note = "铁质车身" , auto = true ,   perm = true ,   remove = true },        
+ 
+    --恢复增益  
+    { id = 70141 , note = "恢复缓冲区" , auto = true ,   perm = true ,   remove = true },        
+    { id = 70063 , note = "耐力/完全恢复" , auto = true ,   perm = true ,   remove = true },        
+ 
+    ——伤害增益  
+    { id = 107031 , note = "增加伤害（叠加）" , auto = true ,   perm = true ,   remove = true },        
+    { id = 30028 ,   note = "专注：增加伤害（10秒）" , auto = true ,   perm = true ,   remove = true },        
+    { id = 30302 ,   note = "增加伤害" , auto = true ,   perm = true ,   remove = true },        
+ 
+  --治疗增益  
+    { id = 30314 ,   note = "醉酒，伤害 + 生命偷取" , auto = true ,   perm = true ,   remove = true },        
+    { id = 200102 , note = "治愈/恢复" , auto = true ,   perm = true ,   remove = true },,  

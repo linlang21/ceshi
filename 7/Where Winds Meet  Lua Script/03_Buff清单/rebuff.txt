@@ -1,0 +1,379 @@
+-- 9. Remove Buffs
+_G.RunRemoveBuffs = function()
+    write_debug("[RemoveBuffs] Starting buff removal")
+ 
+    local mp_local = G and G.main_player
+    if not mp_local then
+        write_debug("[RemoveBuffs] ERROR: main player not found")
+        return
+    end
+ 
+    local mod_name = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+    local action = nil
+    pcall(function() action = portable.import(mod_name) end)
+    write_debug("[RemoveBuffs] combat_train_action loaded: " .. tostring(action ~= nil))
+ 
+    local function safe_call(desc, fn)
+        local ok, err = pcall(fn)
+        if ok then
+            write_debug("[RemoveBuffs] ✔ " .. desc)
+            return true
+        else
+            write_debug("[RemoveBuffs] ✘ " .. desc .. " -> " .. tostring(err))
+            return false
+        end
+    end
+ 
+    -- Try multiple ways to detect whether the player currently has a buff.
+    local function has_buff(buff_id)
+        local ok, res
+ 
+        ok, res = pcall(function()
+            if mp_local.has_buff then return mp_local.has_buff(mp_local, buff_id) end
+            if mp_local["has_buff"] and type(mp_local["has_buff"]) == "function" then return mp_local:has_buff(buff_id) end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+ 
+        ok, res = pcall(function()
+            if mp_local.get_buff then return mp_local.get_buff(mp_local, buff_id) ~= nil end
+            if mp_local["get_buff"] and type(mp_local["get_buff"]) == "function" then return mp_local:get_buff(buff_id) ~= nil end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+ 
+        ok, res = pcall(function()
+            if mp_local.buffs and type(mp_local.buffs) == "table" then
+                if mp_local.buffs[buff_id] then return true end
+                for _, v in pairs(mp_local.buffs) do
+                    if type(v) == "table" and (v.id == buff_id or v.buff_id == buff_id) then
+                        return true
+                    end
+                end
+            end
+            return nil
+        end)
+        if ok and res ~= nil then return res end
+ 
+        return false
+    end
+ 
+    local function remove_buff(buff_id)
+        local eid = mp_local and mp_local.entity_id
+        local removed = false
+ 
+        if action and action.rm_buff then
+            removed = safe_call(string.format("action.rm_buff(%d)", buff_id), function() action.rm_buff(buff_id) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:rm_buff(%d)", buff_id), function() action:rm_buff(buff_id) end) or removed
+            if removed then return true end
+        end
+ 
+        if action and action.remove_buff then
+            removed = safe_call(string.format("action.remove_buff(%d, %s)", buff_id, tostring(eid)), function() action.remove_buff(buff_id, eid) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:remove_buff(%d, %s)", buff_id, tostring(eid)), function() action:remove_buff(buff_id, eid) end) or removed
+            if removed then return true end
+        end
+ 
+        if action and action.del_buff then
+            removed = safe_call(string.format("action.del_buff(%d, %s)", buff_id, tostring(eid)), function() action.del_buff(buff_id, eid) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:del_buff(%d, %s)", buff_id, tostring(eid)), function() action:del_buff(buff_id, eid) end) or removed
+            if removed then return true end
+        end
+ 
+        if action and action.clear_buff then
+            removed = safe_call(string.format("action.clear_buff(%d, %s)", buff_id, tostring(eid)), function() action.clear_buff(buff_id, eid) end) or removed
+            if removed then return true end
+            removed = safe_call(string.format("action:clear_buff(%d, %s)", buff_id, tostring(eid)), function() action:clear_buff(buff_id, eid) end) or removed
+            if removed then return true end
+        end
+ 
+        if mp_local then
+            if mp_local.remove_buff then
+                removed = safe_call(string.format("mp.remove_buff(mp, %d)", buff_id), function() mp_local.remove_buff(mp_local, buff_id) end) or removed
+                if removed then return true end
+                removed = safe_call(string.format("mp:remove_buff(%d)", buff_id), function() mp_local:remove_buff(buff_id) end) or removed
+                if removed then return true end
+            end
+ 
+            if mp_local.del_buff then
+                removed = safe_call(string.format("mp.del_buff(mp, %d)", buff_id), function() mp_local.del_buff(mp_local, buff_id) end) or removed
+                if removed then return true end
+                removed = safe_call(string.format("mp:del_buff(%d)", buff_id), function() mp_local:del_buff(buff_id) end) or removed
+                if removed then return true end
+            end
+ 
+            if mp_local.clear_all_buffs then
+                removed = safe_call("mp.clear_all_buffs(mp)", function() mp_local.clear_all_buffs(mp_local) end) or removed
+                if removed then return true end
+            end
+        end
+ 
+        if not removed then
+            write_debug(string.format("[RemoveBuffs] Could not remove buff id=%d with known methods", buff_id))
+        end
+ 
+        return removed
+    end
+ 
+    -- wrapper that mirrors PermanentBuffs' list style but removes instead of adding
+    local removed_count = 0
+    local function remove(id, note)
+        local present = false
+        local ok, pres = pcall(function() return has_buff(id) end)
+        if ok then present = pres else present = false end
+ 
+        if not present then
+            write_debug(string.format("[RemoveBuffs] Skipping id=%d (%s) - not present", id, note or ""))
+            return
+        end
+ 
+        if remove_buff(id) then
+            write_debug(string.format("[RemoveBuffs] remove_buff id=%d ok (%s)", id, note or ""))
+            removed_count = removed_count + 1
+        else
+            write_debug(string.format("[RemoveBuffs] remove_buff FAILED id=%d (%s)", id, note or ""))
+        end
+    end
+ 
+    -- Buff list (merged)
+    remove(30302, "increase damage")
+    remove(30303, "increase defense")
+    remove(30379, "reduce 30% damage received")
+    remove(30333, "reduce 30% damage received")
+    remove(30376, "reduce 40% damage received")
+    remove(30334, "reduce 50% damage received")
+    remove(30406, "reduce 50% damage received")
+    remove(107011, "increase healing damage")
+    remove(107031, "increase damage (stacks)")
+    remove(30407, "untargettable")
+    remove(30372, "invincible, reduce 90% true damage")
+    remove(30310, "iron body")
+    remove(30314, "drunk, damage + lifesteal")
+    remove(70108, "remove silence status")
+    remove(70116, "immune to silence and stun VIP")
+    remove(70122, "immune to slow VIP")
+    remove(70138, "resurrect lv3, increase 4 VIP")
+    remove(70184, "defense can resist full screen damage VIP")
+    remove(109040, "increase HP and crit Fledgeling")
+    remove(109041, "increase HP and crit Fledgeling")
+    remove(200005, "+10% movement speed")
+    remove(200071, "Overlord /霸体 (super armor)")
+    remove(200006, "-10% chance to receive status ailments")
+    remove(200035, "Continuous HP regeneration")
+    remove(200036, "Continuous HP regeneration")
+    remove(200102, "Healing / recovery")
+    remove(200059, "Shield")
+    remove(200083, "Shield")
+    remove(200099, "Shield = 25% of max HP")
+    remove(200086, "80% damage immunity (HP-based)")
+    remove(102381, "fall damage immunity")
+    remove(200093, "+10% HP-based damage")
+    remove(200094, "+15% HP-based damage")
+    remove(200095, "+20% HP-based damage")
+    remove(200123, "+25% HP-based damage")
+    remove(30028, "Concentration: Increases damage (10 seconds)")
+    remove(70141, "recover buff")
+    remove(30328, "idk yet")
+    remove(30366, "Completely blocks the next 3 hits")
+    remove(70063, "stamina/full recovery")
+    remove(30346, "Evasion / Agility State (Causes animation locks)")
+    remove(70182, "Ice Shield (Visual clutter/glitchy interactions)")
+    remove(70183, "Fire Shield (Visual clutter/glitchy interactions)")
+    remove(70045, "Unknown/Unstable State")
+    remove(70186, "Elemental Shield variant Power of fire")
+    remove(70187, "Elemental Shield variant Power of ice flower")
+    remove(109550, "Spicy Bun: lose Qi over time; +20% damage; hitting restores 3 Qi")
+    remove(109551, "Meat Bun: +15% skill damage when HP>90%; +7.5% HP drain when HP<50%")
+    remove(109552, "Coriander Bun: +5% skill damage; +5% move speed; -10% physical defense")
+    remove(109553, "Mint Bun: Active skill cooldown -20%; Endurance Recovery +30%")
+    remove(109554, "Big Bun: +10% DMG Reduction when HP shield present; convert remaining shield to HP on expire")
+    remove(109555, "Wasabi Bun: Enrage on damage: +15% damage; +5% affinity; -20% physical defense")
+    remove(109556, "Mega Bun: +15% Max HP; +20% Max Endurance; -10% damage")
+    remove(109557, "Intestine Bun: +25% healing and healing received; doubled when HP<30%")
+    remove(109558, "Donkey Bun: Healing restores extra 2% of target's Max HP and Qi")
+    remove(109559, "Energy Bun: Reduces damage >30% Max HP by 50%; increases damage taken next 5s by 20%; 5min CD")
+    remove(109560, "Wasabi Overload: +15% damage; +5% affinity; -20% physical defense")
+    remove(30304, "reduce damage received")
+    remove(30323, "reduce damage received")
+    remove(30404, "Strong blade (Counter-attack when hit)")
+    remove(30308, "transfer damage received")
+    remove(30005, "immune to control")
+    remove(30398, "Boss Animation/Transformation")
+    remove(30384, "Boss Animation/Transformation")
+-- 
+    remove(30335, "Illuminate")
+    remove(30355, "[WARNING] KILLS YOU")
+    remove(30385, "Yi Dao (Boss Transformation)")
+    remove(30386, "Tian Ying (Boss Transformation)")
+    remove(30387, "Sleeping Daoist (Boss Transformation)")
+    remove(30388, "Wooden Eagle (Boss Transformation)")
+    remove(30389, "Zheng E (Boss Transformation)")
+    remove(30390, "Earth Fiend Deity (Boss Transformation)")
+    remove(30391, "Dragon King (Boss Transformation)")
+    remove(30392, "The Void King (Boss Transformation)")
+    remove(30393, "Lucky Seventeen (Boss Transformation)")
+    remove(30394, "Snake Doctor (Boss Transformation)")
+    remove(30395, "River Master (Boss Transformation)")
+    remove(30396, "Lucky Seventeen Phase 2 (Boss Transformation)")
+    remove(30397, "Dao Lord (Boss Transformation)")
+    remove(30399, "Puppeteer (Boss Transformation)")
+    remove(70005, "Super Armor")
+    remove(70021, "[WARNING] Throws you across the map (Avoid using)")
+    remove(70025, "Immune to Parry")
+    remove(70110, "Immune to silence")
+    remove(70132, "Resurrect lv1")
+    remove(102400, "Atk boost 4%")
+    remove(102401, "All Attribute Atk +15%")
+    remove(102402, "Crit Rate 6% Crit Dmg 10%")
+    remove(102403, "Affinity rate 2% Affinity Damage 5%")
+    remove(102404, "Charged Skill DMG 10%")
+    remove(102405, "Martial Art Skill 6.5%")
+    remove(102406, "Light and Heavy dmg +10%")
+    remove(102407, "Max HP 5%")
+    remove(102408, "Def 10%")
+    remove(102409, "Phys Resist up 10")
+    remove(102410, "Heal on kill 2%-4%")
+    remove(102450, "Physical Atk + 8%")
+    remove(102451, "All Attribute Atk +30%")
+    remove(102452, "Precision hit + Crit Rate 12% Crit Dmg 20%")
+    remove(102453, "Affinity 4% Affinity Dmg 10%")
+    remove(102454, "Charged Skill 20%")
+    remove(102455, "Martial Skill 13%")
+    remove(102456, "Light and Heavy Atk 20%")
+    remove(102457, "HP +10%")
+    remove(102458, "Def 20%")
+    remove(102459, "Phys Res 20%")
+    remove(102460, "Heal 4% on kill")
+    remove(102501, "Precision hit + Crit Rate 10% Crit Dmg 20%")
+    remove(102502, "Reduces Dodge Skill's Endurance cost by 10%. After dodging, gains 10% DMG Reduction for 10s.")
+    remove(102503, "After a successful deflection, reduces all damage taken by 30% and increases all damage dealt by 10%.")
+    remove(102504, "Charge Enhancement: Increases Charged Skills' damage by 15% and reduces their Endurance cost by 50%.")
+    remove(102505, "Parry Enhancement: Successful parries no longer consume Endurance. Increases DMG Reduction by a further 10%.")
+    remove(102506, "Qi Breaking Enhancement: Increases Qi damage by 10% and Execute Skill damage by 20%.")
+    remove(102507, "Affinity Boost: Increases Affinity Rate by 5% and Affinity DMG by 10%")
+    remove(102508, "Endurance Recovery: Increases Endurance Recovery by 20%. After dodging, increases all damage dealt by 10% and Speed by 20% for 5s.")
+    remove(102509, "Random attribute atk by 200, reset 20s")
+    remove(102601, "Reduce dmg taken 10%")
+    remove(102602, "+10% dmg and reduce dmg taken 30% on 5s")
+    remove(102604, "+10% dmg and move speed 20%")
+    remove(102605, "Bellstrike 200")
+    remove(102606, "Stone split 200")
+    remove(102607, "Silkbind 200")
+    remove(102701, "Reduce cooldown 20%")
+    remove(102702, "Reduce endurance cost 20%")
+    remove(102703, "Dodge invincible + 50%")
+    remove(102704, "Deflect window + 50%")
+    remove(102705, "After dodge dmg +5% 10s")
+    remove(102706, "After deflect dmg +5% 10s")
+    remove(102707, "Restore 20% hp")
+    remove(102801, "Dmg 10% 10s")
+    remove(102802, "Dmg 10% 5s")
+    remove(103007, "Phy atk down, Bellstike up")
+    remove(103008, "Phy atk down, Stonesplit up")
+    remove(104001, "Affinity: Gain 10% more Affection from others. (Series does not stack)")
+    remove(104002, "Gourmet: Encyclopedia - Gain 20% more Food (Series does not stack)")
+    remove(104003, "Quick Step: Increases Movement Speed by 2% (Series does not stack)")
+    remove(104004, "Lightness: Lightness Skill +5% (Series does not stack)")
+    remove(104005, "Cold Resistance: Cold Resistance +5% (Series does not stack)")
+    remove(104006, "Heat Resistance: Heat Resistance +5% (Series does not stack)")
+    remove(104007, "Poison Resistance: Poison Resistance +5% (Series does not stack)")
+    remove(104008, "Fear Resistance: Fear Resistance +5% (Series does not stack)")
+    remove(104009, "Mind: Mind +5% (Series does not stack)")
+    remove(104010, "Muscles: Muscles +5% (Series does not stack)")
+    remove(104011, "Meridians: Meridians +5% (Series does not stack)")
+    remove(104012, "Organs: Organs +5% (Series does not stack)")
+    remove(104013, "Harvesting: Increases Herb Gathering Critical Rate by 1% (Series does not stack)")
+    remove(104014, "Mining: Increases Mining Critical Rate by 1% (Series does not stack)")
+    remove(104015, "Logging: Increases Woodcutting Critical Rate by 1% (Series does not stack)")
+    remove(104016, "Angling: Increases Fishing Critical Rate by 1% (Series does not stack)")
+    remove(104017, "Hunting: Increases Hunting Critical Rate by 1% (Series does not stack)")
+    remove(104018, "Forge 1: Increases Forging 1 Critical Rate by 1% (Series does not stack)")
+    remove(104019, "Forge 2: Increases Forging 2 Critical Rate by 1% (Series does not stack)")
+    remove(104020, "Forge 3: Increases Forging 3 Critical Rate by 1% (Series does not stack)")
+    remove(104021, "Forge 4: Increases Forging 4 Critical Rate by 1% (Series does not stack)")
+    remove(104022, "Harvesting: Herbal Gathering Critical Rate +7.5% (Series does not stack)")
+    remove(104023, "Harvesting: Herbal Gathering Critical Rate +7.5% (Series does not stack)")
+    remove(104024, "Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)")
+    remove(104025, "Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)")
+    remove(104026, "Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)")
+    remove(104027, "Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)")
+    remove(104028, "Mining: Mining Critical Rate +7.5% (Series does not stack)")
+    remove(104029, "Mining: Mining Critical Rate +7.5% (Series does not stack)")
+    remove(104030, "Mining: Mining Critical Rate +10% (Series does not stack)")
+    remove(104031, "Mining: Mining Critical Rate +10% (Series does not stack)")
+    remove(104032, "Mining: Mining Critical Rate +10% (Series does not stack)")
+    remove(104033, "Mining: Mining Critical Rate +10% (Series does not stack)")
+    remove(104034, "Logging: Increases Woodcutting Critical Rate by 7.5% (Series does not stack)")
+    remove(104035, "Logging: Increases Woodcutting Critical Rate by 7.5% (Series does not stack)")
+    remove(104036, "Logging: Logging Critical Rate +20% (Series does not stack)")
+    remove(104037, "Logging: Logging Critical Rate +20% (Series does not stack)")
+    remove(104038, "Logging: Logging Critical Rate +20% (Series does not stack)")
+    remove(104039, "Logging: Logging Critical Rate +20% (Series does not stack)")
+    remove(104040, "Angling: Fishing Critical Rate +7.5% (Series does not stack)")
+    remove(104041, "Angling: Fishing Critical Rate +7.5% (Series does not stack)")
+    remove(104042, "Angling: Fishing Critical Rate +10% (Series does not stack)")
+    remove(104043, "Angling: Fishing Critical Rate +10% (Series does not stack)")
+    remove(104044, "Angling: Fishing Critical Rate +10% (Series does not stack)")
+    remove(104045, "Angling: Fishing Critical Rate +10% (Series does not stack)")
+    remove(104046, "Hunting: Hunting Critical Rate +7.5% (Series does not stack)")
+    remove(104047, "Hunting: Hunting Critical Rate +7.5% (Series does not stack)")
+    remove(104048, "Hunting: Hunting Critical Rate +10% (Series does not stack)")
+    remove(104049, "Hunting: Hunting Critical Rate +10% (Series does not stack)")
+    remove(104050, "Hunting: Hunting Critical Rate +10% (Series does not stack)")
+    remove(104051, "Hunting: Hunting Critical Rate +10% (Series does not stack)")
+    remove(106006, "Imprisoned")
+    remove(107102, "Agile step effect")
+    remove(108010, "Invisibility")
+    remove(109014, "Crit Rate 20%")
+    remove(109015, "Affinity rate + 15%")
+    remove(109016, "Damage + 15%")
+    remove(109017, "Shield 40%hp")
+    remove(109024, "Critical damage + 10%")
+    remove(109025, "Critical damage + 10%")
+    remove(109039, "Bamboocut + 10%")
+    remove(109501, "Food Effect: Physical Attack +10-20 (Series does not stack)")
+    remove(109502, "Food Effect: Max HP +1,100 (Series does not stack)")
+    remove(109503, "Food Effect: Physical Attack +20-40 (Series does not stack)")
+    remove(109504, "Food Effect: Max HP +2,300 (Series does not stack)")
+    remove(109505, "Food effect boost 60-120 atk (Series does not stack)")
+    remove(109506, "Food Effect: Max HP +5600 (Series does not stack)")
+    remove(109600, "Scroll & Script: Divinecraft Poison duration +5s. (Series does not stack)")
+    remove(109601, "Scroll & Script: Divinecraft Fire duration +5s. (Series does not stack)")
+    remove(109602, "Scroll & Script: Divinecraft Water duration +5s. (Series does not stack)")
+    remove(109603, "Scroll & Script: Medicine healing +15%. (Series does not stack)")
+    remove(109604, "Scroll & Script: Dodge cost -5%, Speed +5%. (Series does not stack)")
+    remove(109605, "Scroll & Script: Interruption resistance +20%. (Series does not stack)")
+    remove(109606, "Scroll & Script: Restore endurance boost 5%. (Series does not stack)")
+    remove(109607, "Scroll & Script: Below 30% HP, deal/take +20% dmg. (Series does not stack)")
+    remove(109608, "Scroll & Script: Below 30% HP, deal/receive -20% dmg. (Series does not stack)")
+    remove(109609, "Scroll & Script: -20% dmg taken during Crowd Control. (Series does not stack)")
+    remove(109610, "Scroll & Script: Sac 20% HP for +8% Blade dmg. (Series does not stack)")
+    remove(109611, "Scroll & Script: Sac 20% HP for +8% Exotic weapon dmg. (Series does not stack)")
+    remove(109612, "Scroll & Script: Sac 30% Def for +10% Crit/Affi DMG. (Series does not stack)")
+    remove(109620, "[WARNING] KILLS YOU")
+    remove(109622, "[WARNING] Defeated: Disordered energy, increased debuff damage.")
+    remove(109623, "Adds Glow effect")
+    remove(109624, "[WARNING] KILLS YOU")
+    remove(109920, "Affinity rate + 20%")
+    remove(109921, "Crit rate 20%")
+    remove(109922, "Dmg deal 20%")
+    remove(109923, "Atk 20%")
+    remove(109925, "Affi 3% crit 6%")
+    remove(109926, "Atk 8% and reduce def 5%")
+    remove(109927, "Reduce dmg taken 80%")
+    remove(120004, "8% crit rate bonus")
+    remove(120007, "10% physic penetration")
+    remove(120009, "+12% heavy atk")
+    remove(120010, "+12% light atk")
+    remove(120012, "Reduce dmg taken on combat")
+    remove(120013, "Reduce dmg taken 40%")
+    remove(200031, "GM BNO IMMORTAL - Game Master immortality")
+    remove(200059, "Shield")
+    remove(380013, "NPC DUMB")
+    remove(380014, "[UNKNOWN]")
+ 
+    write_debug(string.format("[RemoveBuffs] Completed. Removed=%d", removed_count))
+end

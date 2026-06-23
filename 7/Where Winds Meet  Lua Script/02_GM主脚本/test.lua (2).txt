@@ -1,0 +1,2154 @@
+-- SCRIPT START TEST
+print("=== SCRIPT IS RUNNING ===")
+
+-- =================================================================================
+-- SECTION 1: DEBUG & SETUP
+-- =================================================================================
+local DEBUG_FILE_ENABLED = true
+local DEBUG_FILE_PATH = "C:\\temp\\Where Winds Meet\\Scripts\\script_debug.txt"
+
+local function write_debug(message)
+if DEBUG_FILE_ENABLED then
+pcall(function()
+local file = io.open(DEBUG_FILE_PATH, "a")
+if file then
+file:write(os.date("%H:%M:%S") .. " " .. message .. "\n")
+file:close()
+end
+end)
+end
+print(message)
+end
+
+-- Initialize Debug File
+if DEBUG_FILE_ENABLED then
+pcall(function()
+local file = io.open(DEBUG_FILE_PATH, "w")
+if file then
+file:write("=== SCRIPT DEBUG LOG ===\n")
+file:close()
+end
+end)
+end
+
+-- Check Environment
+if not G or not G.main_player or not cc or not cc.Director then
+write_debug("ERROR: Game environment not ready (G or cc missing)")
+return
+end
+local mp = G.main_player
+local director = cc.Director:getInstance()
+local scene = director:getRunningScene()
+local size = director:getVisibleSize() -- Needed for dragging boundaries
+
+-- Remove old menu if exists
+if _G.GM_MENU then
+_G.GM_MENU:removeFromParent()
+_G.GM_MENU = nil
+end
+
+-- =================================================================================
+-- SECTION 2: GLOBAL LOGIC FUNCTIONS (THE BRAIN)
+-- =================================================================================
+
+-- VISUAL SYNC (This connects Hotkeys to the Menu UI)
+_G.ForceUpdateVisuals = function() end -- Forward declaration
+
+
+-- KILL NPC
+_G.RunKillNPC = function()
+write_debug("[KillNPC] Triggered")
+local count = 0
+local combat_action = nil
+pcall(function() combat_action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action') end)
+
+if combat_action then
+pcall(function() combat_action.set_npc_mortal(true) end)
+pcall(function() combat_action.kill_all_npc() end)
+end
+
+-- Boss Damage Logic
+pcall(function()
+local target_id = mp:get_lock_target_id()
+if target_id then
+local target = G.space:get_entity(target_id)
+if target then
+pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+pcall(function() target:attr_set_HP(0, mp.entity_id, true, false) end)
+pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+count = count + 1
+end
+end
+end)
+-- Area Cleanup Loop
+pcall(function()
+local all = MEntityManager:GetAOIEntities()
+for i = 1, #all do
+local ent = all[i]
+local ok, name = pcall(function() return ent:GetName() end)
+if ok and name and (name:find('AiAvatar') or name:find('Npc') or name:find('Boss')) then
+local ok2, eid = pcall(function() return ent.entity_id end)
+if ok2 and eid then
+local target = G.space:get_entity(eid)
+if target and target ~= mp then
+pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+count = count + 1
+end
+end
+end
+end
+end)
+end
+
+-- AUTO LOOT
+-- === Robust AutoLoot with interactable filter ===
+_G.RunAutoLoot = function()
+local mp_local = G and G.main_player
+if not mp_local then
+write_debug("[AutoLoot] ERROR: main player not found")
+return
+end
+
+local interact_misc = nil
+pcall(function() interact_misc = portable.import('hexm.common.misc.interact_misc') end)
+
+-- 1) Collections
+pcall(function() mp_local:ride_skill_collect_nearby_collections(5000) end)
+
+-- 2) Rewards
+pcall(function()
+local rewards = mp_local:ride_skill_find_nearest_kill_reward(5000)
+if rewards then
+pcall(function() mp_local:ride_skill_get_kill_reward(rewards) end)
+end
+end)
+
+-- 3) Drops
+pcall(function()
+local drops = DropManager.get_nearby_drop_entities(5000)
+if drops then
+for _, eid in ipairs(drops) do
+pcall(function() mp_localick_drop_item(eid) end)
+pcall(function() mp_localick_reward_item(eid) end)
+end
+end
+end)
+
+-- 4) Interact entities (complex interactions) with filtering
+local ok_pos, playerPos = pcall(function() return mp_local:get_position() end)
+if not ok_pos or not playerPos then playerPos = {x=0,y=0,z=0} end
+
+local entities = MEntityManager:GetAOIEntities() or {}
+local targets = {}
+
+-- Name patterns to ignore (case-insensitive)
+local IGNORE_NAME_PATTERNS = {
+"lockpick", "lock pick", "elevator", "elev", "mini", "minigame", "mini-game",
+"puzzle", "chess", "rhythm", "pitch", "pitch pot", "slot", "gacha"
+}
+
+-- Status/config IDs to ignore (populate with IDs you want to blacklist)
+local IGNORE_STATUS_IDS = {
+-- [12345] = true, -- example: add known status_no values to skip
+}
+local IGNORE_CONFIG_IDS = {
+-- [54321] = true, -- example: add known config_no values to skip
+}
+
+local function name_matches_ignore(name)
+if not name then return false end
+local lname = string.lower(name)
+for _, pat in ipairs(IGNORE_NAME_PATTERNS) do
+if lname:find(pat, 1, true) then
+return true
+end
+end
+return false
+end
+
+for i = 1, #entities do
+local ent = entities[i]
+local ok, name = pcall(function() return ent:GetName() end)
+if ok and name and name:find('InteractComEntity') then
+-- Quick name-based filter
+if name_matches_ignore(name) then
+write_debug("[AutoLoot] Skipping by name: " .. tostring(name))
+else
+local ok2, eno = pcall(function() return ent:GetEntityNo() end)
+local ok3, eid = pcall(function() return ent.entity_id end)
+if ok2 and ok3 and eid then
+local luaEnt = G.space and G.space:get_entity(eid)
+if luaEnt then
+local ok4, comp = pcall(function() return luaEnt:get_interact_comp(eid) end)
+if ok4 and comp and comp.position then
+-- Component-based filter: check status/config IDs
+local skip = false
+
+-- check status_no (could be single or table)
+if comp.status_no then
+if type(comp.status_no) == "table" then
+for _, sid in ipairs(comp.status_no) do
+if IGNORE_STATUS_IDS[sid] then skip = true; break end
+end
+else
+if IGNORE_STATUS_IDS[comp.status_no] then skip = true end
+end
+end
+
+-- check config_no (could be single or table)
+if not skip and comp.config_no then
+if type(comp.config_no) == "table" then
+for _, cid in ipairs(comp.config_no) do
+if IGNORE_CONFIG_IDS[cid] then skip = true; break end
+end
+else
+if IGNORE_CONFIG_IDS[comp.config_no] then skip = true end
+end
+end
+
+if skip then
+write_debug(string.format("[AutoLoot] Skipping entity id=%s due to blacklisted comp id", tostring(eid)))
+else
+local dx = playerPos.x - comp.position[1]
+local dy = playerPos.y - comp.position[2]
+local dz = playerPos.z - comp.position[3]
+local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+local priority = tostring(eid):find('ins_entity') and 0 or 1
+table.insert(targets, {
+entity_no = eno,
+entity_id = eid,
+luaEnt = luaEnt,
+comp = comp,
+distance = dist,
+priority = priority
+})
+end
+end
+end
+end
+end
+end
+end
+
+table.sort(targets, function(a, b)
+if a.priority ~= b.priority then return a.priority < b.priority end
+return a.distance < b.distance
+end)
+
+for i = 1, #targets do
+local t = targets[i]
+local ways = {}
+local seen = {}
+
+if interact_misc then
+local ok_ways, possible = pcall(function()
+return interact_misc.get_all_possible_active_ways(t.entity_no)
+end)
+if ok_ways and possible then
+for _, w in ipairs(possible) do
+if not seen[w] then seen[w] = true; table.insert(ways, w) end
+end
+end
+end
+
+local comp_id = nil
+if t.comp and t.comp.components then
+for cid, comp_data in pairs(t.comp.components) do
+comp_id = cid
+if comp_data.status_no and not seen[comp_data.status_no] then
+seen[comp_data.status_no] = true
+table.insert(ways, comp_data.status_no)
+end
+if comp_data.config_no and not seen[comp_data.config_no] then
+seen[comp_data.config_no] = true
+table.insert(ways, comp_data.config_no)
+end
+end
+end
+
+if #ways > 0 then
+pcall(function() mp_local:set_interact_target_id(t.entity_id) end)
+for _, way in ipairs(ways) do
+pcall(function()
+mp_local:trigger_active_interact(way, t.entity_id, nil, nil, comp_id)
+end)
+end
+pcall(function() mp_local:trigger_active_interact() end)
+end
+end
+
+write_debug("[AutoLoot] Completed run")
+end
+
+
+-- ============================================
+-- ONLINE BUFFS (PERMANENT STYLE)
+-- ============================================
+local ONLINE_BUFFS = {
+
+1040014, --"Relaxed: Max HP Increase")
+109556, --"Mega Bun: +15% HP +20% Endurance -10% dmg")
+130107, --"Max HP Boost")
+109506, --"Food Effect: +5600 HP")
+109553, --"Mint Bun: Skill cooldown -20%; Endurance Recovery +30%")
+109557, --"Intestine Bun: +25% healing; doubled below 30% HP")
+109558, --"Donkey Bun: Extra 2% Max HP + Qi on heals")
+--102265, --"Hymn of Justice")
+
+--109920, -- affinity
+--109921, -- crit
+
+1140004, --"Swallow's Agility: Reduces the Endurance cost of jumping by 50% and increases Max Endurance.")
+380021, --"Falling Damage Immunity")
+--1051000, -- Unli Stamina
+
+}
+
+local function ApplyOnlineBuffs()
+write_debug("[Online Buffs] Starting")
+
+local mp = G and G.main_player
+if not mp then
+write_debug("[Online Buffs] ERROR: main player not found")
+return
+end
+
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then
+write_debug("[Online Buffs] ERROR: combat_train_action not available")
+return
+end
+
+local eid = mp.entity_id
+local reason = "gm"
+local level = 5
+local duration = 10675199116730015 -- PERMANENT STYLE
+
+local function apply_buff(id)
+local ok = pcall(function()
+action.add_buff(id, eid, duration, level, eid, reason)
+end)
+if ok then return true end
+
+-- fallback (some clients require 
+ok = pcall(function()
+action:add_buff(id, eid, duration, level, eid, reason)
+end)
+return ok
+end
+
+local applied = 0
+for _, buff in ipairs(ONLINE_BUFFS) do
+if apply_buff(buff) then
+applied = applied + 1
+end
+end
+
+write_debug("[Online Buffs] ✔ Buffs applied: "..applied)
+end
+
+
+local function RemoveOnlineBuffs()
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then
+write_debug("[Online Buffs] ERROR: combat_train_action not available")
+return
+end
+
+local removed = 0
+for _, buff in ipairs(ONLINE_BUFFS) do
+local ok = pcall(action.rm_buff, buff)
+if ok then removed = removed + 1 end
+end
+
+write_debug("[Online Buffs] ✔ Buffs removed: "..removed)
+end
+
+
+-- ============================================
+-- OP BUFFS (STACK + PERMANENT STYLE)
+-- ============================================
+-- Format: { buff_id, stacks }
+local OP_BUFFS = {
+{30379, 1}, -- DMG Reduction 30%
+{30376, 1}, -- DMG Reduction 40%
+{109927,1}, -- DMG Reduction 80%
+
+{1053023,1}, -- +200% dmg
+{1053024,1}, -- +400% dmg
+{1053025,1}, -- +800% dmg
+{1053026,1}, -- +16x dmg
+{109922,1}, -- Damage +20%
+{109923,1}, -- Atk +20%
+
+{109925,5}, -- Affinity + Crit (5 stacks)
+
+{100000,10}, -- Momentum Strike (10 stacks)
+
+{103001,1}, -- Physical +1000
+{103002,1},
+{103004,1},
+{103003,1},
+{103005,1},
+{103006,1},
+
+{102451,1}, -- All Attribute ATK +30%
+{1058100,1}, -- OP HEAL
+{200096,1}, -- OP HEAL
+{1051000,1 }, -- Unli Stamina
+}
+
+
+local function ApplyOPBuffs()
+write_debug("[OP Buffs] Starting")
+
+local mp = G and G.main_player
+if not mp then
+write_debug("[OP Buffs] ERROR: main player not found")
+return
+end
+
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then
+write_debug("[OP Buffs] ERROR: combat_train_action not available")
+return
+end
+
+local eid = mp.entity_id
+local reason = "gm"
+local level = 5
+local duration = 10675199116730015 -- Permanent style
+
+local function add_buff_once(id)
+return pcall(function()
+action.add_buff(id, eid, duration, level, eid, reason)
+end) or pcall(function()
+action:add_buff(id, eid, duration, level, eid, reason)
+end)
+end
+
+local applied = 0
+for _, info in ipairs(OP_BUFFS) do
+local buff_id = info[1]
+local stacks = info[2] or 1
+
+for i = 1, stacks do
+if add_buff_once(buff_id) then
+applied = applied + 1
+end
+end
+end
+
+write_debug("[OP Buffs] ✔ Buff instances applied: "..applied)
+end
+
+
+local function RemoveOPBuffs()
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then
+write_debug("[OP Buffs] ERROR: combat_train_action not available")
+return
+end
+
+local removed = 0
+for _, info in ipairs(OP_BUFFS) do
+local buff_id = info[1]
+
+local ok = pcall(action.rm_buff, buff_id)
+if ok then
+removed = removed + 1
+end
+end
+
+write_debug("[OP Buffs] ✔ Buffs removed: "..removed)
+end
+
+-- ======================================================
+-- LIFE SKILL CYCLER (THREE BUFFS EACH)
+-- ======================================================
+_G.LIFE_SKILL_INDEX = 1 -- default = None
+
+-- name + up to 3 buffs each
+local LIFE_SKILL_OPTIONS = {
+{ name = "None", buff1 = nil, buff2 = nil, buff3 = nil },
+
+{ name = "Herb", buff1 = 104027, buff2 = 310145, buff3 = 55000001 },
+{ name = "Hunting", buff1 = 104051, buff2 = 310149, buff3 = 55000001 },
+{ name = "Mining", buff1 = 104033, buff2 = 310146, buff3 = 55000001 },
+{ name = "Fishing", buff1 = 104045, buff2 = 310148, buff3 = 55000001 },
+{ name = "Logging", buff1 = 104039, buff2 = 310147, buff3 = 55000001 },
+}
+
+local LAST_BUFF_1 = nil
+local LAST_BUFF_2 = nil
+local LAST_BUFF_3 = nil
+
+
+local function RemoveLifeSkillBuffs()
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then return end
+
+if LAST_BUFF_1 then pcall(action.rm_buff, LAST_BUFF_1) end
+if LAST_BUFF_2 then pcall(action.rm_buff, LAST_BUFF_2) end
+if LAST_BUFF_3 then pcall(action.rm_buff, LAST_BUFF_3) end
+
+LAST_BUFF_1 = nil
+LAST_BUFF_2 = nil
+LAST_BUFF_3 = nil
+end
+
+
+local function ApplyLifeSkillBuff()
+local opt = LIFE_SKILL_OPTIONS[_G.LIFE_SKILL_INDEX]
+if not opt then return end
+
+-- NONE = Clear Only
+if not opt.buff1 and not opt.buff2 and not opt.buff3 then
+RemoveLifeSkillBuffs()
+write_debug("[LifeSkill] Cleared all life skill buffs")
+return
+end
+
+local mp = G and G.main_player
+if not mp then
+write_debug("[LifeSkill] ERROR: main player missing")
+return
+end
+
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then
+write_debug("[LifeSkill] ERROR: cannot load combat action")
+return
+end
+
+local eid = mp.entity_id
+local reason = "gm"
+local level = 5
+local duration = 10675199116730015
+
+-- remove previous buffs first
+RemoveLifeSkillBuffs()
+
+local function addBuff(id)
+if not id then return end
+pcall(function()
+action.add_buff(id, eid, duration, level, eid, reason)
+end)
+pcall(function()
+action:add_buff(id, eid, duration, level, eid, reason)
+end)
+end
+
+addBuff(opt.buff1)
+addBuff(opt.buff2)
+addBuff(opt.buff3)
+
+LAST_BUFF_1 = opt.buff1
+LAST_BUFF_2 = opt.buff2
+LAST_BUFF_3 = opt.buff3
+
+write_debug("[LifeSkill] Applied "..opt.name)
+end
+
+
+_G.CycleLifeSkill = function()
+_G.LIFE_SKILL_INDEX = _G.LIFE_SKILL_INDEX + 1
+if _G.LIFE_SKILL_INDEX > #LIFE_SKILL_OPTIONS then
+_G.LIFE_SKILL_INDEX = 1
+end
+ApplyLifeSkillBuff()
+end
+
+
+_G.GetLifeSkillLabel = function()
+local opt = LIFE_SKILL_OPTIONS[_G.LIFE_SKILL_INDEX]
+return "Life Skill < " .. opt.name .. " >"
+end
+
+
+
+
+
+-- HIDDEN UTILS
+local function refresh_combat_menu()
+local gm_combat = package.loaded["hexm.client.debug.gm.gm_commands.gm_combat"]
+if gm_combat and gm_combat.gm_open_combat_train then gm_combat.gm_open_combat_train() end
+end
+
+-- Permanent Buffs
+_G.RunPermanentBuffs = function()
+write_debug("[PermanentBuffs] Starting")
+
+local mp_local = G and G.main_player
+if not mp_local then
+write_debug("[PermanentBuffs] ERROR: main player not found")
+return
+end
+
+local action
+pcall(function()
+action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+end)
+if not action then
+write_debug("[PermanentBuffs] ERROR: combat_train_action not available")
+return
+end
+
+local eid = mp_local.entity_id
+local reason = "gm"
+local level = 5
+local duration = 10675199116730015
+
+local function apply_buff(id, note)
+local ok = pcall(function()
+action.add_buff(id, eid, duration, level, eid, reason)
+end)
+if ok then return true end
+ok = pcall(function()
+action:add_buff(id, eid, duration, level, eid, reason)
+end)
+return ok
+end
+
+local applied = 0
+function apply(id, text)
+if apply_buff(id, text) then
+applied = applied + 1
+end
+end
+
+
+----------------------------------------------------------
+-- CATEGORY SWITCHES FOR "PERMANENT BUFFS" (true = on // false = off)
+----------------------------------------------------------
+local ENABLE_ONLINE = false
+local ENABLE_HP = false
+local ENABLE_ATTACK = false
+local ENABLE_DEFENSE = false
+local ENABLE_IMMUNITY = false
+local ENABLE_HEALING = false
+local ENABLE_BUN = false
+local ENABLE_NONSTACK = false
+local ENABLE_BELLSTRIKE = false
+local ENABLE_SILKBIND = false
+local ENABLE_BAMBOOCUT = false
+local ENABLE_STONESPLIT = false
+local ENABLE_WOODSLASH = false
+local ENABLE_TESTBUFFS = false
+local ENABLE_SEPARATEBUFFS = true
+
+----------------------------------------------------------
+-- CATEGORY: ONLINE BUFFS
+----------------------------------------------------------
+if ENABLE_ONLINE then
+apply(102457, "HP Enhancement: Max HP +10%")
+apply(102407, "HP Enhancement: Max HP +5%")
+apply(21081720, "HP Bonus +15%")
+apply(1040014, "Relaxed: Max HP Increase")
+apply(109556, "Mega Bun: +15% HP +20% Endurance -10% dmg")
+apply(130107, "Max HP Boost")
+apply(21080720, "HP Increase")
+apply(109506, "Food Effect: +5600 HP")
+apply(102265, "Hymn of Justice")
+apply(21000031, "Attribute Inner Way: HP +100")
+apply(21000061, "Attribute Inner Way: HP +150")
+apply(21000091, "Attribute Inner Way: HP +200")
+apply(21080701, "HP Increase")
+apply(21080702, "HP Increase")
+apply(21080703, "HP Increase")
+apply(21080704, "HP Increase")
+apply(21080705, "HP Increase")
+apply(21080706, "HP Increase")
+apply(21080707, "HP Increase")
+apply(21080708, "HP Increase")
+apply(21080709, "HP Increase")
+apply(21080710, "HP Increase")
+apply(21080711, "HP Increase")
+apply(21080712, "HP Increase")
+apply(21080713, "HP Increase")
+apply(21080714, "HP Increase")
+apply(21080715, "HP Increase")
+apply(21080716, "HP Increase")
+apply(21080717, "HP Increase")
+apply(21080718, "HP Increase")
+apply(21080719, "HP Increase")
+apply(21080720, "HP Increase")
+apply(21081301, "HP Bonus: Max HP +0.75%")
+apply(21081302, "HP Bonus: Max HP +1.5%")
+apply(21081303, "HP Bonus: Max HP +2.25%")
+apply(21081304, "HP Bonus: Max HP +3%")
+apply(21081305, "HP Bonus: Max HP +3.75%")
+apply(21081306, "HP Bonus: Max HP +4.5%")
+apply(21081307, "HP Bonus: Max HP +5.25%")
+apply(21081308, "HP Bonus: Max HP +6%")
+apply(21081309, "HP Bonus: Max HP +6.75%")
+apply(21081310, "HP Bonus: Max HP +7.5%")
+apply(21081311, "HP Bonus: Max HP +8.25%")
+apply(21081312, "HP Bonus: Max HP +9%")
+apply(21081313, "HP Bonus: Max HP +9.75%")
+apply(21081314, "HP Bonus: Max HP +10.5%")
+apply(21081315, "HP Bonus: Max HP +11.25%")
+apply(21081316, "HP Bonus: Max HP +12%")
+apply(21081317, "HP Bonus: Max HP +12.75%")
+apply(21081318, "HP Bonus: Max HP +13.5%")
+apply(21081319, "HP Bonus: Max HP +14.25%")
+apply(21081320, "HP Bonus: Max HP +15%")
+apply(21081701, "HP Bonus: Max HP +0.75%")
+apply(21081702, "HP Bonus: Max HP +1.5%")
+apply(21081703, "HP Bonus: Max HP +2.25%")
+apply(21081704, "HP Bonus: Max HP +3%")
+apply(21081705, "HP Bonus: Max HP +3.75%")
+apply(21081706, "HP Bonus: Max HP +4.5%")
+apply(21081707, "HP Bonus: Max HP +5.25%")
+apply(21081708, "HP Bonus: Max HP +6%")
+apply(21081709, "HP Bonus: Max HP +6.75%")
+apply(21081710, "HP Bonus: Max HP +7.5%")
+apply(21081711, "HP Bonus: Max HP +8.25%")
+apply(21081712, "HP Bonus: Max HP +9%")
+apply(21081713, "HP Bonus: Max HP +9.75%")
+apply(21081714, "HP Bonus: Max HP +10.5%")
+apply(21081715, "HP Bonus: Max HP +11.25%")
+apply(21081716, "HP Bonus: Max HP +12%")
+apply(21081717, "HP Bonus: Max HP +12.75%")
+apply(21081718, "HP Bonus: Max HP +13.5%")
+apply(21081719, "HP Bonus: Max HP +14.25%")
+apply(21081720, "HP Bonus: Max HP +15%")
+apply(109920, "Affinity rate + 15%")
+apply(109921, "Crit rate 20%")
+
+--apply(30379, "DMG Reduction 30%")
+--apply(30376, "DMG Reduction 40%")
+--apply(109927, "DMG Reduction 80%")
+
+--apply(1053023, "Damage Boost: Gain 200% damage")
+--apply(1053024, "Damage Boost: Gain 400% damage")
+--apply(1053025, "Damage Boost: Gain 800% damage")
+--apply(1053026, "Damage Boost: Gain 16x damage boost")
+--apply(109922, "Dmg deal 20%")
+--apply(109923, "Atk 20%")
+--apply(109925, "Affi 3% crit 6% (1/5 Stacks)")
+
+--apply(100000, "Momentum Strike: HP and HP DMG 10% Permanently (10 Stacks) -- Testing Purposes")
+--apply(103001, "Physical Attack +1,000")
+--apply(103002, "Bellstrike Attack +1,000")
+--apply(103004, "Silkbind Attack +1,000")
+--apply(103003, "Stonesplit Attack +1,000")
+--apply(103005, "Woodslash Attack +1,000")
+--apply(103006, "Bamboocut Attack +1,000")
+--apply(102451, "All Attribute Atk +30%")
+
+--apply(200096, "Light Dust After Morning Rain: Restores HP over time.") ------- AURA VISUAL -------
+--apply(1058100,"Morning Rain: Restore HP for yourself and one nearby ally over time.")
+
+
+----------------------------------------------------------
+-------------- ONLINE ALWAYS ACTIVATE BUFFS --------------
+----------------------------------------------------------
+
+apply(1140004, "Swallow's Agility: Reduces the Endurance cost of jumping by 50% and increases Max Endurance.")
+apply(310145, "Critical: Buff Critical - Herb Gathering")
+apply(310146, "Critical: Buff Critical - Mining")
+apply(310147, "Critical: Buff Critical - Woodcutting")
+apply(310148, "Critical: Buff Critical - Fishing")
+apply(310149, "Critical: Buff Critical - Hunting")
+apply(70025, "Immune to Parry")
+apply(380021, "Falling Damage Immunity")
+
+end
+
+
+----------------------------------------------------------
+-- CATEGORY: HP
+----------------------------------------------------------
+if ENABLE_HP then
+
+apply(102457, "HP Enhancement: Max HP +10%")
+apply(102407, "HP Enhancement: Max HP +5%")
+apply(21081720, "HP Bonus +15%")
+apply(1040014, "Relaxed: Max HP Increase")
+apply(109556, "Mega Bun: +15% HP +20% Endurance -10% dmg")
+apply(130107, "Max HP Boost")
+apply(21080720, "HP Increase")
+apply(109506, "Food Effect: +5600 HP")
+apply(102265, "Hymn of Justice")
+apply(21000031, "Attribute Inner Way: HP +100")
+apply(21000061, "Attribute Inner Way: HP +150")
+apply(21000091, "Attribute Inner Way: HP +200")
+apply(21080701, "HP Increase")
+apply(21080702, "HP Increase")
+apply(21080703, "HP Increase")
+apply(21080704, "HP Increase")
+apply(21080705, "HP Increase")
+apply(21080706, "HP Increase")
+apply(21080707, "HP Increase")
+apply(21080708, "HP Increase")
+apply(21080709, "HP Increase")
+apply(21080710, "HP Increase")
+apply(21080711, "HP Increase")
+apply(21080712, "HP Increase")
+apply(21080713, "HP Increase")
+apply(21080714, "HP Increase")
+apply(21080715, "HP Increase")
+apply(21080716, "HP Increase")
+apply(21080717, "HP Increase")
+apply(21080718, "HP Increase")
+apply(21080719, "HP Increase")
+apply(21080720, "HP Increase")
+apply(21081301,"HP Bonus: Max HP +0.75%")
+apply(21081302,"HP Bonus: Max HP +1.5%")
+apply(21081303,"HP Bonus: Max HP +2.25%")
+apply(21081304,"HP Bonus: Max HP +3%")
+apply(21081305,"HP Bonus: Max HP +3.75%")
+apply(21081306,"HP Bonus: Max HP +4.5%")
+apply(21081307,"HP Bonus: Max HP +5.25%")
+apply(21081308,"HP Bonus: Max HP +6%")
+apply(21081309,"HP Bonus: Max HP +6.75%")
+apply(21081310,"HP Bonus: Max HP +7.5%")
+apply(21081311,"HP Bonus: Max HP +8.25%")
+apply(21081312,"HP Bonus: Max HP +9%")
+apply(21081313,"HP Bonus: Max HP +9.75%")
+apply(21081314,"HP Bonus: Max HP +10.5%")
+apply(21081315,"HP Bonus: Max HP +11.25%")
+apply(21081316,"HP Bonus: Max HP +12%")
+apply(21081317,"HP Bonus: Max HP +12.75%")
+apply(21081318,"HP Bonus: Max HP +13.5%")
+apply(21081319,"HP Bonus: Max HP +14.25%")
+apply(21081320,"HP Bonus: Max HP +15%")
+apply(21081701,"HP Bonus: Max HP +0.75%")
+apply(21081702,"HP Bonus: Max HP +1.5%")
+apply(21081703,"HP Bonus: Max HP +2.25%")
+apply(21081704,"HP Bonus: Max HP +3%")
+apply(21081705,"HP Bonus: Max HP +3.75%")
+apply(21081706,"HP Bonus: Max HP +4.5%")
+apply(21081707,"HP Bonus: Max HP +5.25%")
+apply(21081708,"HP Bonus: Max HP +6%")
+apply(21081709,"HP Bonus: Max HP +6.75%")
+apply(21081710,"HP Bonus: Max HP +7.5%")
+apply(21081711,"HP Bonus: Max HP +8.25%")
+apply(21081712,"HP Bonus: Max HP +9%")
+apply(21081713,"HP Bonus: Max HP +9.75%")
+apply(21081714,"HP Bonus: Max HP +10.5%")
+apply(21081715,"HP Bonus: Max HP +11.25%")
+apply(21081716,"HP Bonus: Max HP +12%")
+apply(21081717,"HP Bonus: Max HP +12.75%")
+apply(21081718,"HP Bonus: Max HP +13.5%")
+apply(21081719,"HP Bonus: Max HP +14.25%")
+apply(21081720,"HP Bonus: Max HP +15%")
+apply(1056015, "Increases Attack by 20%, Defense by 12%, and HP by 15%")
+apply(1056034, "Swiftness Lv.5: Increases Movement Speed and Max HP by 25%")
+
+end
+
+
+----------------------------------------------------------
+-- CATEGORY: ATTACK
+----------------------------------------------------------
+if ENABLE_ATTACK then
+--apply(1053023, "Damage Boost: Gain 200% damage")
+--apply(1053024, "Damage Boost: Gain 400% damage")
+--apply(1053025, "Damage Boost: Gain 800% damage")
+--apply(102400, "Atk boost 4%")
+--apply(102801, "Dmg 10% 10s")
+--apply(102802, "Dmg 10% 5s")
+--apply(120007, "10% Physical Penetration")
+--apply(102604, "Dodge Buff: +10% dmg and move speed 20%")
+--apply(109922, "Dmg deal 20%")
+--apply(109923, "Atk 20%")
+
+--apply(200123, "+25% HP-based damage")
+--apply(30314, "Drunkenness: +DMG 25%, Skill Lifesteal 20%") ---- MINIMAL AURA VISUAL ----
+--apply(30302, "Increase Damage") ---- MINIMAL AURA VISUAL ----
+--apply(30028, "Concentration: Increases damage (10 seconds)")
+--apply(107031, "Increase Damage (1/5 stacks)")
+--apply(107031, "Increase Damage (2/5 stacks)")
+--apply(107031, "Increase Damage (3/5 stacks)")
+--apply(107031, "Increase Damage (4/5 stacks)")
+--apply(107031, "Increase Damage (5/5 stacks)")
+
+--apply(120009, "+12% Heavy atk")
+--apply(120010, "+12% Light atk")
+--apply(102455, "+13% Martial Skill")
+--apply(102456, "Light and Heavy Atk 20%")
+--apply(102404, "Charged Skill DMG 10%")
+--apply(102454, "Charged Skill DMG 20%")
+--apply(102504, "Charge Enhancement: Increases Charged Skills' damage by 15% and reduces their Endurance cost by 50%")
+
+--apply(100000, "Momentum Strike: HP and HP DMG 10% Permanently (10 Stacks) -- Testing Purposes")
+--apply(103001, "Physical Attack +1,000")
+--apply(103002, "Bellstrike Attack +1,000")
+--apply(103004, "Silkbind Attack +1,000")
+--apply(103003, "Stonesplit Attack +1,000")
+--apply(103005, "Woodslash Attack +1,000")
+--apply(103006, "Bamboocut Attack +1,000")
+--apply(102401, "All Attribute Atk +15%")
+--apply(102451, "All Attribute Atk +30%")
+
+--apply(109920, "Affinity rate + 15%")
+--apply(109925, "Affi 3% crit 6% (5 Stacks)")
+--apply(107011, "Jadeware: +Affinity 10%, +Affinity DMG 20%")
+--apply(102403, "Affinity rate 2% Affinity Damage 5%")
+--apply(102453, "Affinity 4% Affinity Dmg 10%")
+--apply(102507, "Affinity Boost: Increases Affinity Rate by 5% and Affinity DMG by 10%")
+--apply(109015, "Will of Four Seasons: Affinity rate + 15%")
+
+--apply(120004, "8% crit rate bonus")
+--apply(102402, "Crit Rate 6% Crit Dmg 10%")
+--apply(102501, "Precision hit: Crit Rate 10% Crit Dmg 20%")
+--apply(102501, "Precision hit + Crit Rate 10% Crit Dmg 20%")
+--apply(102452, "Precision hit: Crit Rate 12% Crit Dmg 20%")
+--apply(109014, "Heart of Four Seasons: Crit Rate 20%")
+--apply(109921, "Crit rate 20%")
+--apply(109024, "Lone Quill: Critical damage + 10%")
+--apply(109025, "Illusion: Critical damage + 10%")
+end
+
+
+----------------------------------------------------------
+-- CATEGORY: DEFENSE
+----------------------------------------------------------
+if ENABLE_DEFENSE then
+--apply(200059, "Shield: No Desc") ---- VISUAL ----
+--apply(200083, "Shield: No Desc") ---- VISUAL ----
+--apply(30303, "Increase Defense")
+--apply(30310, "Iron Body (1/3 Stacks)") ---- MINIMAL GLOWING BODY VISUAL ----
+--apply(30310, "Iron Body (2/3 Stacks)") ---- MINIMAL GLOWING BODY VISUAL ----
+--apply(30310, "Iron Body (3/3 Stacks)") ---- MINIMAL GLOWING BODY VISUAL ----
+--apply(200099, "Shield 25% of max HP") ---- VISUAL ----
+--apply(30333, "DMG Reduction 30%")
+--apply(120013, "DMG Reduction 40%")
+--apply(30334, "DMG Reduction 50%")
+--apply(30406, "DMG Reduction 60%")
+--apply(200086, "DMG Reduction 80% (HP Based)")
+--apply(30372, "Unrivaled, DMG Reduction 90%, Immune QI DMG") ---- MINIMAL AURA VISUAL ----
+--apply(30366, "Shield: Negates 3 Attacks, Immune to QI DMG") ---- VISUAL ----
+--apply(30407, "Untargettable")
+--apply(70184, "Defense can resist full screen damage VIP")
+--apply(200071, "Super Armor: Immune To Stagger, HP-based Damage 20%") ---- VISUAL ----
+--apply(102602, "+10% DMG and DMG Reduction 30%")
+--apply(102459, "Phys Res 20")
+end
+
+
+----------------------------------------------------------
+-- CATEGORY: IMMUNITY
+----------------------------------------------------------
+if ENABLE_IMMUNITY then
+apply(70025, "Immune to Parry")
+apply(380021, "Falling Damage Immunity")
+apply(70116, "Immune To Silence + Stun")
+apply(70122, "Immune To Slow")
+apply(102381, "Immune To Poison Temporarily")
+apply(1056041, "Immune to all control effects")
+
+end
+
+
+----------------------------------------------------------
+-- CATEGORY: HEALING
+----------------------------------------------------------
+if ENABLE_HEALING then
+apply(200035, "Rainy Day: No Desc (HP regen?)")
+apply(200036, "Apricot Blossoms: : No Desc (HP regen?)")
+apply(410024, "Qi Regeneration: Restores Qi over time")
+apply(410023, "HP Recovery: Restores HP over time") ------- AURA VISUAL -------
+apply(200096, "Light Dust After Morning Rain: Restores HP over time.") ------- AURA VISUAL -------
+apply(1058100,"Morning Rain: Restore HP for yourself and one nearby ally over time.")
+
+
+apply(21069111, "Inner Way: Panacea Fan: Cloudburst Healing continuously grants allies Damage Reduction")
+apply(21000151, "Attribute Inner Way: Healing Bonus +18%")
+apply(2106150302, "Healing Up: +5% healing bonus, stacks up to 3 (6s duration)")
+apply(2106150602, "Healing Up: +6% healing bonus, stacks up to 3")
+apply(400035, "Nourishment: Increases HP healing by 8%")
+
+
+end
+
+
+----------------------------------------------------------
+-- CATEGORY: BUN
+----------------------------------------------------------
+if ENABLE_BUN then
+apply(109550, "Spicy Bun: lose Qi over time; +20% damage; hit restores 3 Qi")
+--apply(109551, "Meat Bun: +15% skill dmg >90% HP; HP drain <50%")
+--apply(109552, "Coriander Bun: +5% skill dmg; +5% move; -10% physical defense")
+apply(109553, "Mint Bun: Skill cooldown -20%; Endurance Recovery +30%")
+--apply(109554, "Big Bun: +10% DMG Reduction w/ shield; converts shield to HP")
+apply(109555, "Wasabi Bun: +15% dmg; +5% affinity; -20% defense")
+apply(109556, "Mega Bun: +15% Max HP; +20% Endurance; -10% dmg")
+apply(109557, "Intestine Bun: +25% healing; doubled below 30% HP")
+apply(109558, "Donkey Bun: Extra 2% Max HP + Qi on heals")
+--apply(109559, "Reduces damage that exceeds 30% of your Max HP by 50%, but increases your damage taken over the next 5 seconds by 20% 5m CD")
+end
+
+
+----------------------------------------------------------
+-- CUSTOM CATEGORIES
+----------------------------------------------------------
+if ENABLE_NONSTACK then
+--------------------------------------------------
+----------- Scroll & Script Buffs
+--------------------------------------------------
+--apply(109604, "Scroll & Script: Dodge cost -5%, Speed +5%.")
+--apply(109605, "Scroll & Script: Interruption resistance +20%.")
+apply(109606, "Scroll & Script: Restore endurance boost 5%.")
+--apply(109607, "Scroll & Script: Below 30% HP, deal/take +20% dmg.")
+--apply(109608, "Scroll & Script: Below 30% HP, deal/receive -20% dmg.")
+--apply(109609, "Scroll & Script: -20% dmg taken during Crowd Control.")
+--apply(109610, "Scroll & Script: Sac 20% HP for +8% Blade dmg.")
+--apply(109611, "Scroll & Script: Sac 20% HP for +8% Exotic weapon dmg.")
+--apply(109612, "Scroll & Script: Sac 30% Def for +10% Crit/Affi DMG.")
+
+
+----------------------------------------------------------
+---------- FOOD Buffs
+----------------------------------------------------------
+--apply(109501, "Food Effect: Increases Physical Attack (10–20) for 30 minutes")
+--apply(109502, "Food Effect: Increases Max HP by 1,100 for 30 minutes")
+--apply(109503, "Food Effect: Increases Physical Attack (20–40) for 30 minutes")
+--apply(109504, "Food Effect: Increases Max HP by 2,300 for 30 minutes")
+--apply(109505, "Food Effect: Increases Physical Attack (60–120) for 30 minutes")
+apply(109506, "Food Effect: Increases Max HP by 5,600 for 30 minutes")
+
+
+----------------------------------------------------------
+---------- Life Skills / Gathering Buffs
+----------------------------------------------------------
+--apply(104051, "Hunting Crit +10%")
+apply(310149, "Critical: Buff Critical - Hunting")
+
+--apply(104033, "Mining Crit +10%")
+apply(310146, "Critical: Buff Critical - Mining")
+
+--apply(104045, "Fishing Crit +10%")
+apply(310148, "Critical: Buff Critical - Fishing")
+
+--apply(104027, "Herbal Crit +10%")
+apply(310145, "Critical: Buff Critical - Herb Gathering")
+
+--apply(104039, "Logging Crit +20%")
+apply(310147, "Critical: Buff Critical - Woodcutting")
+
+
+
+
+
+end
+if ENABLE_BELLSTRIKE then
+----------------------------------------------------------
+---------- BELLSTRIKE
+----------------------------------------------------------
+--apply(102605, "Bellstrike Enhancement: Increases Bellstrike Attack by 200")
+--apply(103002, "Bellstrike Attack +1,000")
+apply(21080201, "Bellstrike Attack Up")
+apply(21080202, "Bellstrike Attack Up")
+apply(21080203, "Bellstrike Attack Up")
+apply(21080204, "Bellstrike Attack Up")
+apply(21080205, "Bellstrike Attack Up")
+apply(21080206, "Bellstrike Attack Up")
+apply(21080207, "Bellstrike Attack Up")
+apply(21080208, "Bellstrike Attack Up")
+apply(21080209, "Bellstrike Attack Up")
+apply(21080210, "Bellstrike Attack Up")
+apply(21080211, "Bellstrike Attack Up")
+apply(21080212, "Bellstrike Attack Up")
+apply(21080213, "Bellstrike Attack Up")
+apply(21080214, "Bellstrike Attack Up")
+apply(21080215, "Bellstrike Attack Up")
+apply(21080216, "Bellstrike Attack Up")
+apply(21080217, "Bellstrike Attack Up")
+apply(21080218, "Bellstrike Attack Up")
+apply(21080219, "Bellstrike Attack Up")
+apply(21080220, "Bellstrike Attack Up")
+apply(21080201, "Bellstrike Attack Up")
+apply(21080202, "Bellstrike Attack Up")
+apply(21080203, "Bellstrike Attack Up")
+apply(21080204, "Bellstrike Attack Up")
+apply(21080205, "Bellstrike Attack Up")
+apply(21080206, "Bellstrike Attack Up")
+apply(21080207, "Bellstrike Attack Up")
+apply(21080208, "Bellstrike Attack Up")
+apply(21080209, "Bellstrike Attack Up")
+apply(21080210, "Bellstrike Attack Up")
+apply(21080211, "Bellstrike Attack Up")
+apply(21080212, "Bellstrike Attack Up")
+apply(21080213, "Bellstrike Attack Up")
+apply(21080214, "Bellstrike Attack Up")
+apply(21080215, "Bellstrike Attack Up")
+apply(21080216, "Bellstrike Attack Up")
+apply(21080217, "Bellstrike Attack Up")
+apply(21080218, "Bellstrike Attack Up")
+apply(21080219, "Bellstrike Attack Up")
+apply(21080220, "Bellstrike Attack Up")
+apply(102412, "Bellstrike Effect: Increases Minimum Bellstrike Attack")
+apply(102414, "Bellstrike Effect: Increases Maximum Bellstrike Attack")
+apply(130021, "Bellstrike Resistance Enhancement")
+apply(130041, "Bellstrike Penetration Enhancement")
+apply(102330, "Cosmic Brew Effect: Increases Bellstrike Attack")
+apply(102331, "Cosmic Brew Effect: Increases Bellstrike Attack")
+apply(102332, "Cosmic Brew Effect: Increases Bellstrike Attack")
+apply(102333, "Cosmic Brew Effect: Increases Bellstrike Attack")
+apply(102334, "Cosmic Brew Effect: Increases Bellstrike Attack") ---
+
+end
+if ENABLE_SILKBIND then
+----------------------------------------------------------
+---------- SILKBIND
+----------------------------------------------------------
+--apply(102607, "Silkbind Enhancement: Increases Silkbind Attack by 200")
+apply(103004, "Silkbind Attack +1,000")
+apply(21080401, "Silkbind Attack Up")
+apply(21080402, "Silkbind Attack Up")
+apply(21080403, "Silkbind Attack Up")
+apply(21080404, "Silkbind Attack Up")
+apply(21080405, "Silkbind Attack Up")
+apply(21080406, "Silkbind Attack Up")
+apply(21080407, "Silkbind Attack Up")
+apply(21080408, "Silkbind Attack Up")
+apply(21080409, "Silkbind Attack Up")
+apply(21080410, "Silkbind Attack Up")
+apply(21080411, "Silkbind Attack Up")
+apply(21080412, "Silkbind Attack Up")
+apply(21080413, "Silkbind Attack Up")
+apply(21080414, "Silkbind Attack Up")
+apply(21080415, "Silkbind Attack Up")
+apply(21080416, "Silkbind Attack Up")
+apply(21080417, "Silkbind Attack Up")
+apply(21080418, "Silkbind Attack Up")
+apply(21080419, "Silkbind Attack Up")
+apply(21080420, "Silkbind Attack Up")
+apply(21080723, "Silkbind Attack Up: Increases Silkbind Attack by 20%")
+apply(21080726, "Silkbind Attack Up: Increases Silkbind Attack by 20%")
+apply(102420, "Silkbind Effect: Increases Minimum Silkbind Attack")
+apply(102422, "Silkbind Effect: Increases Maximum Silkbind Attack")
+apply(130024, "Silkbind Resistance Enhancement")
+apply(130044, "Silkbind Penetration Enhancement")
+apply(102350, "Harmonic Brew Effect: Increases Silkbind Attack")
+apply(102351, "Harmonic Brew Effect: Increases Silkbind Attack")
+apply(102352, "Harmonic Brew Effect: Increases Silkbind Attack")
+apply(102353, "Harmonic Brew Effect: Increases Silkbind Attack")
+apply(102354, "Harmonic Brew Effect: Increases Silkbind Attack")
+
+end
+if ENABLE_BAMBOOCUT then
+----------------------------------------------------------
+---------- BAMBOOCUT
+----------------------------------------------------------
+--apply(103006, "Bamboocut Attack +1,000")
+apply(21080601, "Bamboocut Attack Up")
+apply(21080602, "Bamboocut Attack Up")
+apply(21080603, "Bamboocut Attack Up")
+apply(21080604, "Bamboocut Attack Up")
+apply(21080605, "Bamboocut Attack Up")
+apply(21080606, "Bamboocut Attack Up")
+apply(21080607, "Bamboocut Attack Up")
+apply(21080608, "Bamboocut Attack Up")
+apply(21080609, "Bamboocut Attack Up")
+apply(21080610, "Bamboocut Attack Up")
+apply(21080611, "Bamboocut Attack Up")
+apply(21080612, "Bamboocut Attack Up")
+apply(21080613, "Bamboocut Attack Up")
+apply(21080614, "Bamboocut Attack Up")
+apply(21080615, "Bamboocut Attack Up")
+apply(21080616, "Bamboocut Attack Up")
+apply(21080617, "Bamboocut Attack Up")
+apply(21080618, "Bamboocut Attack Up")
+apply(21080619, "Bamboocut Attack Up")
+apply(21080620, "Bamboocut Attack Up")
+--apply(21080724, "Bamboocut Attack Up: Increases Bamboocut Attack by 20%")
+apply(102370, "Resonance Brew Effect: Increases Bamboocut Attack")
+apply(102371, "Resonance Brew Effect: Increases Bamboocut Attack")
+apply(102372, "Resonance Brew Effect: Increases Bamboocut Attack")
+apply(102373, "Resonance Brew Effect: Increases Bamboocut Attack")
+apply(102374, "Resonance Brew Effect: Increases Bamboocut Attack")
+--apply(102375, "Resonance Brew Effect: Increases Bamboocut Attack")
+--apply(102376, "Resonance Brew Effect: Increases Bamboocut Attack")
+
+
+
+end
+if ENABLE_STONESPLIT then
+----------------------------------------------------------
+---------- STONESPLIT
+----------------------------------------------------------
+--apply(102606, "Stonesplit Enhancement: Increases Stonesplit Attack by 200")
+apply(103003, "Stonesplit Attack +1,000")
+apply(21080301, "Stonesplit Attack Up")
+apply(21080302, "Stonesplit Attack Up")
+apply(21080303, "Stonesplit Attack Up")
+apply(21080304, "Stonesplit Attack Up")
+apply(21080305, "Stonesplit Attack Up")
+apply(21080306, "Stonesplit Attack Up")
+apply(21080307, "Stonesplit Attack Up")
+apply(21080308, "Stonesplit Attack Up")
+apply(21080309, "Stonesplit Attack Up")
+apply(21080310, "Stonesplit Attack Up")
+apply(21080311, "Stonesplit Attack Up")
+apply(21080312, "Stonesplit Attack Up")
+apply(21080313, "Stonesplit Attack Up")
+apply(21080314, "Stonesplit Attack Up")
+apply(21080315, "Stonesplit Attack Up")
+apply(21080316, "Stonesplit Attack Up")
+apply(21080317, "Stonesplit Attack Up")
+apply(21080318, "Stonesplit Attack Up")
+apply(21080319, "Stonesplit Attack Up")
+apply(21080320, "Stonesplit Attack Up")
+--apply(21080721, "Stonesplit Attack Up: Increases Stonesplit Attack by 20%")
+apply(102416, "Stonesplit Effect: Increases Minimum Stonesplit Attack")
+apply(102418, "Stonesplit Effect: Increases Maximum Stonesplit Attack")
+apply(130022, "Stonesplit Resistance Enhancement")
+apply(130042, "Stonesplit Penetration Enhancement")
+apply(102340, "Pulse Brew Effect: Increases Stonesplit Attack")
+apply(102341, "Pulse Brew Effect: Increases Stonesplit Attack")
+apply(102342, "Pulse Brew Effect: Increases Stonesplit Attack")
+apply(102343, "Pulse Brew Effect: Increases Stonesplit Attack")
+apply(102344, "Pulse Brew Effect: Increases Stonesplit Attack")
+
+end
+if ENABLE_WOODSLASH then
+
+----------------------------------------------------------
+---------- WOODSLASH
+----------------------------------------------------------
+apply(103005, "Woodslash Attack +1,000")
+apply(102360, "Echo Brew Effect: Increases Woodslash Attack")
+apply(102361, "Echo Brew Effect: Increases Woodslash Attack")
+apply(102362, "Echo Brew Effect: Increases Woodslash Attack")
+apply(102363, "Echo Brew Effect: Increases Woodslash Attack")
+apply(102364, "Echo Brew Effect: Increases Woodslash Attack")
+
+
+
+end
+if ENABLE_TESTBUFFS then
+
+
+
+
+
+
+end
+if ENABLE_SEPARATEBUFFS then
+--apply(100000, "Momentum Strike: HP and HP DMG 10% Permanently (10 Stacks) -- Testing Purposes")
+--apply(200096, "Light Dust After Morning Rain: Restores HP over time.") ------- AURA VISUAL -------
+--apply(1058100, "OP Heal")
+--apply(30379, "DMG Reduction 30%")
+--apply(30376, "DMG Reduction 40%")
+--apply(109927, "DMG Reduction 80%")
+--apply(1051000, "Infinite Lightness Skill")
+
+--apply(108010,"Stealth")
+
+
+
+--apply(102701, "Cooldown Reduction")
+--apply(310194,"Dmg down")
+--apply(1053023, "Damage Boost: Gain 200% damage")
+--apply(1053024, "Damage Boost: Gain 400% damage")
+--apply(1053025, "Damage Boost: Gain 800% damage")
+--apply(103001, "Physical Attack +1,000")
+
+
+apply(1140001,"Swallow's Agility")
+apply(1140002,"Swallow's Agility")
+apply(1140003,"Swallow's Agility")
+apply(1140004,"Swallow's Agility")
+
+
+
+
+
+
+
+
+end
+
+end
+
+
+
+-- Remove Buffs
+_G.RunRemoveBuffs = function()
+write_debug("[RemoveBuffs] Starting buff removal")
+
+local mp_local = G and G.main_player
+if not mp_local then
+write_debug("[RemoveBuffs] ERROR: main player not found")
+return
+end
+
+local mod_name = "hexm.client.ui.windows.gm.gm_combat.combat_train_action"
+local action = nil
+pcall(function() action = portable.import(mod_name) end)
+write_debug("[RemoveBuffs] combat_train_action loaded: " .. tostring(action ~= nil))
+
+local function safe_call(desc, fn)
+local ok, err = pcall(fn)
+if ok then
+write_debug("[RemoveBuffs] ✔ " .. desc)
+return true
+else
+write_debug("[RemoveBuffs] ✘ " .. desc .. " -> " .. tostring(err))
+return false
+end
+end
+
+-- Try multiple ways to detect whether the player currently has a buff.
+local function has_buff(buff_id)
+local ok, res
+
+ok, res = pcall(function()
+if mp_local.has_buff then return mp_local.has_buff(mp_local, buff_id) end
+if mp_local["has_buff"] and type(mp_local["has_buff"]) == "function" then return mp_local:has_buff(buff_id) end
+return nil
+end)
+if ok and res ~= nil then return res end
+
+ok, res = pcall(function()
+if mp_local.get_buff then return mp_local.get_buff(mp_local, buff_id) ~= nil end
+if mp_local["get_buff"] and type(mp_local["get_buff"]) == "function" then return mp_local:get_buff(buff_id) ~= nil end
+return nil
+end)
+if ok and res ~= nil then return res end
+
+ok, res = pcall(function()
+if mp_local.buffs and type(mp_local.buffs) == "table" then
+if mp_local.buffs[buff_id] then return true end
+for _, v in pairs(mp_local.buffs) do
+if type(v) == "table" and (v.id == buff_id or v.buff_id == buff_id) then
+return true
+end
+end
+end
+return nil
+end)
+if ok and res ~= nil then return res end
+
+return false
+end
+
+local function remove_buff(buff_id)
+local eid = mp_local and mp_local.entity_id
+local removed = false
+
+if action and action.rm_buff then
+removed = safe_call(string.format("action.rm_buff(%d)", buff_id), function() action.rm_buff(buff_id) end) or removed
+if removed then return true end
+removed = safe_call(string.format("action:rm_buff(%d)", buff_id), function() action:rm_buff(buff_id) end) or removed
+if removed then return true end
+end
+
+if action and action.remove_buff then
+removed = safe_call(string.format("action.remove_buff(%d, %s)", buff_id, tostring(eid)), function() action.remove_buff(buff_id, eid) end) or removed
+if removed then return true end
+removed = safe_call(string.format("action:remove_buff(%d, %s)", buff_id, tostring(eid)), function() action:remove_buff(buff_id, eid) end) or removed
+if removed then return true end
+end
+
+if action and action.del_buff then
+removed = safe_call(string.format("action.del_buff(%d, %s)", buff_id, tostring(eid)), function() action.del_buff(buff_id, eid) end) or removed
+if removed then return true end
+removed = safe_call(string.format("action:del_buff(%d, %s)", buff_id, tostring(eid)), function() action:del_buff(buff_id, eid) end) or removed
+if removed then return true end
+end
+
+if action and action.clear_buff then
+removed = safe_call(string.format("action.clear_buff(%d, %s)", buff_id, tostring(eid)), function() action.clear_buff(buff_id, eid) end) or removed
+if removed then return true end
+removed = safe_call(string.format("action:clear_buff(%d, %s)", buff_id, tostring(eid)), function() action:clear_buff(buff_id, eid) end) or removed
+if removed then return true end
+end
+
+if mp_local then
+if mp_local.remove_buff then
+removed = safe_call(string.format("mp.remove_buff(mp, %d)", buff_id), function() mp_local.remove_buff(mp_local, buff_id) end) or removed
+if removed then return true end
+removed = safe_call(string.format("mp:remove_buff(%d)", buff_id), function() mp_local:remove_buff(buff_id) end) or removed
+if removed then return true end
+end
+
+if mp_local.del_buff then
+removed = safe_call(string.format("mp.del_buff(mp, %d)", buff_id), function() mp_local.del_buff(mp_local, buff_id) end) or removed
+if removed then return true end
+removed = safe_call(string.format("mp:del_buff(%d)", buff_id), function() mp_local:del_buff(buff_id) end) or removed
+if removed then return true end
+end
+
+if mp_local.clear_all_buffs then
+removed = safe_call("mp.clear_all_buffs(mp)", function() mp_local.clear_all_buffs(mp_local) end) or removed
+if removed then return true end
+end
+end
+
+if not removed then
+write_debug(string.format("[RemoveBuffs] Could not remove buff id=%d with known methods", buff_id))
+end
+
+return removed
+end
+
+-- wrapper that mirrors PermanentBuffs' list style but removes instead of adding
+local removed_count = 0
+local function remove(id, note)
+local present = false
+local ok, pres = pcall(function() return has_buff(id) end)
+if ok then present = pres else present = false end
+
+if not present then
+write_debug(string.format("[RemoveBuffs] Skipping id=%d (%s) - not present", id, note or ""))
+return
+end
+
+if remove_buff(id) then
+write_debug(string.format("[RemoveBuffs] remove_buff id=%d ok (%s)", id, note or ""))
+removed_count = removed_count + 1
+else
+write_debug(string.format("[RemoveBuffs] remove_buff FAILED id=%d (%s)", id, note or ""))
+end
+end
+
+-- Buff list
+--remove(310194,"Dmg down")
+--remove(1051000, "Infinite Lightness Skill")
+--remove(108010,"Stealth")
+
+
+--remove(310194,"Dmg down")
+--remove(1053023, "Damage Boost: Gain 200% damage")
+--remove(1053025, "Damage Boost: Gain 800% damage")
+--remove(1053026, "Damage Boost: Gain 16x damage boost")
+--remove(103001, "Physical Attack +1,000")
+
+
+
+--remove(107161,"Adaptive Steel")
+--remove(96009,"Adaptive Steel")
+--remove(107091,"Adaptive Steel")
+remove(200089,"Adaptive Steel")
+remove(10215230,"Adaptive Steel")
+remove(10215240,"Adaptive Steel")
+remove(10215250,"Adaptive Steel")
+remove(109003,"Seasonal Edge")
+remove(10208210,"Seasonal Edge")
+remove(10208215,"Seasonal Edge")
+remove(10208220,"Seasonal Edge")
+remove(10208221,"Seasonal Edge")
+remove(10208222,"Seasonal Edge")
+
+
+
+write_debug(string.format("[RemoveBuffs] Completed. Removed=%d", removed_count))
+end
+
+
+-- =================================================================================
+-- SECTION 3: GLOBAL LOGIC FUNCTIONS (THE BRAIN)
+-- =================================================================================
+
+-- KILL NPC (Enhanced with Boss Lock logic from old file)
+_G.RunKillNPC = function()
+write_debug("[KillNPC] Triggered")
+local count = 0
+local combat_action = nil
+pcall(function() combat_action = portable.import('hexm.client.ui.windows.gm.gm_combat.combat_train_action') end)
+
+if combat_action then
+pcall(function() combat_action.set_npc_mortal(true) end)
+pcall(function() combat_action.kill_all_npc() end)
+end
+
+-- Boss Damage Logic (Restored from old file)
+pcall(function()
+local target_id = mp:get_lock_target_id()
+if target_id then
+local target = G.space:get_entity(target_id)
+if target then
+pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+pcall(function() target:attr_set_HP(0, mp.entity_id, true, false) end)
+pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+count = count + 1
+end
+end
+end)
+
+-- Area Cleanup Loop
+pcall(function()
+local all = MEntityManager:GetAOIEntities()
+for i = 1, #all do
+local ent = all[i]
+local ok, name = pcall(function() return ent:GetName() end)
+if ok and name and (name:find('AiAvatar') or name:find('Npc') or name:find('Boss')) then
+local ok2, eid = pcall(function() return ent.entity_id end)
+if ok2 and eid then
+local target = G.space:get_entity(eid)
+if target and target ~= mp then
+pcall(function() target:force_set_HP(0, mp.entity_id, "gm") end)
+pcall(function() target:do_direct_damage(999999999, mp.entity_id, 0, 0, 0, 0) end)
+count = count + 1
+end
+end
+end
+end
+end)
+write_debug("[KillNPC] Killed entities: " .. count)
+end
+
+
+-- HIDDEN FUNCTIONS (Restored so disabled buttons still work if enabled)
+local function refresh_combat_menu()
+local gm_combat = package.loaded["hexm.client.debug.gm.gm_commands.gm_combat"]
+if gm_combat and gm_combat.gm_open_combat_train then
+gm_combat.gm_open_combat_train()
+end
+end
+
+local function weapon_guise()
+local gm_decorator = package.loaded["hexm.client.debug.gm.gm_decorator"] or require("hexm.client.debug.gm.gm_decorator")
+if gm_decorator.gm_command_short_cuts.game then
+local cmds = gm_decorator.gm_command_short_cuts.game
+if cmds["$weapon_guise"] then pcall(cmds["$weapon_guise"], 1) end
+end
+end
+
+-- =================================================================================
+-- SECTION 4: STATE MANAGEMENT & LOGIC
+-- =================================================================================
+
+-- State Variables
+_G.LOOT_STATE = 0 -- 0=Off, 1=Once, 2=Loop
+
+
+-- Loop intervals (seconds) - edit these
+_G.LOOT_LOOP_SEC = _G.LOOT_LOOP_SEC or 0.3 -- edit this if wish to change the loop time for: Autoloot
+-- Definitions
+local STATE_LABELS = {[0]="OFF", [1]="ONCE", [2]="LOOP"}
+--local FOV_VALUES = {10,20,30,40,50,60,70,80,90,100}
+--_G.FOV_INDEX = 6
+
+-- Toggles
+_G.GM_GODMODE = _G.GM_GODMODE or false
+_G.GM_STAMINA = _G.GM_STAMINA or false
+
+
+-- Action Timers
+local loot_action, buff_action, recover_action = nil, nil, nil
+local buttonList = {}
+local selectedIndex = 1
+
+-- Forward Declaration
+local function UpdateButtonVisuals() end
+_G.ForceUpdateVisuals = function() UpdateButtonVisuals() end
+
+-- --- LOGIC WRAPPERS ---
+
+local function HandleLoopAction(state, actionRef, func, delaySec)
+-- default delay if nil/invalid
+delaySec = tonumber(delaySec) or 5.0
+if delaySec < 0.05 then delaySec = 0.05 end
+
+-- stop old loop action
+if actionRef then
+local scene = cc.Director:getInstance():getRunningScene()
+if scene then scene:stopAction(actionRef) end
+actionRef = nil
+end
+
+-- EXECUTE IMMEDIATELY regardless of Once or Loop
+if state == 1 or state == 2 then
+func()
+end
+
+-- IF LOOP: Start the timer for the *next* execution
+if state == 2 then
+local scene = cc.Director:getInstance():getRunningScene()
+if scene then
+actionRef = cc.RepeatForever:create(cc.Sequence:create({
+cc.DelayTime:create(delaySec),
+cc.CallFunc:create(function()
+func()
+end)
+}))
+scene:runAction(actionRef)
+end
+end
+
+return actionRef
+end
+
+_G.ToggleAutoLootLoop = function()
+_G.LOOT_STATE = (_G.LOOT_STATE + 1) % 3
+loot_action = HandleLoopAction(_G.LOOT_STATE, loot_action, _G.RunAutoLoot, _G.LOOT_LOOP_SEC)
+UpdateButtonVisuals()
+end
+
+-- --- CYCLE FUNCTIONS ---
+
+_G.CycleState = function(globalVarName, dir, maxState)
+local val = _G[globalVarName] + dir
+if val < 0 then val = maxState end
+if val > maxState then val = 0 end
+_G[globalVarName] = val
+UpdateButtonVisuals()
+end
+
+--_G.CycleFOV = function(dir)
+-- _G.FOV_INDEX = _G.FOV_INDEX + dir
+-- if _G.FOV_INDEX < 1 then _G.FOV_INDEX = #FOV_VALUES end
+-- if _G.FOV_INDEX > #FOV_VALUES then _G.FOV_INDEX = 1 end
+-- local cam = package.loaded["hexm.client.debug.gm.gm_commands.gm_camera"] or require("hexm.client.debug.gm.gm_commands.gm_camera")
+-- if cam and cam.test_camera_fov then pcall(cam.test_camera_fov, FOV_VALUES[_G.FOV_INDEX]) end
+-- UpdateButtonVisuals()
+--end
+
+_G.ExecuteLoot = function()
+loot_action = HandleLoopAction(_G.LOOT_STATE, loot_action, _G.RunAutoLoot, _G.LOOT_LOOP_SEC)
+end
+
+_G.ExecuteBuff = function()
+buff_action = HandleLoopAction(_G.BUFF_STATE, buff_action, _G.RunAutoBuff, _G.BUFF_LOOP_SEC)
+end
+
+_G.ExecuteRecover = function()
+recover_action = HandleLoopAction(_G.RECOVER_STATE, recover_action, _G.RunRecover, _G.RECOVER_LOOP_SEC)
+end
+-- =================================================================================
+-- SECTION 5: NAVIGATION & VISUALS (CONSISTENT THEME FOR ALL BUTTONS)
+-- =================================================================================
+
+-- 1. EXACT RGB COLORS
+local C_BG = cc.c3b(50, 50, 50) -- Dark Background
+local C_TEXT_OFF = cc.c3b(192, 192, 192) -- Inactive (Silver)
+local C_TEXT_ON = cc.c3b(0, 255, 0) -- Active (Green)
+local C_SELECTED = cc.c3b(255, 0, 255) -- Hover/Selected (Magenta)
+local C_READONLY = cc.c3b(153, 255, 255) -- Read-only/value part (Cyan)
+
+-- 2. SELECTION LOGIC
+local function UpdateSelection()
+for i, item in ipairs(buttonList) do
+local isSelected = (i == selectedIndex)
+
+-- Default to Inactive Color
+local targetMainColor = C_TEXT_OFF
+
+-- If the option is Active (ON/LOOP/etc), turn Green
+if item.isActive and item.isActive() then
+targetMainColor = C_TEXT_ON
+end
+
+-- Selected overrides main color only
+if isSelected then
+targetMainColor = C_SELECTED
+item.btn:setScale(1.05)
+else
+item.btn:setScale(1.0)
+end
+
+-- We render ALL button text via ccui.Text nodes now
+if item.mainText then
+item.mainText:setColor(targetMainColor)
+end
+
+-- Value part always cyan (only exists on value buttons)
+if item.valueText then
+item.valueText:setColor(C_READONLY)
+end
+end
+end
+
+UpdateButtonVisuals = function()
+for _, item in ipairs(buttonList) do
+if item.updateText then item.updateText() end
+end
+UpdateSelection()
+end
+
+-- Navigation Logic
+_G.MenuUp = function()
+selectedIndex = selectedIndex - 1
+if selectedIndex < 1 then selectedIndex = #buttonList end
+UpdateSelection()
+end
+
+_G.MenuDown = function()
+selectedIndex = selectedIndex + 1
+if selectedIndex > #buttonList then selectedIndex = 1 end
+UpdateSelection()
+end
+
+-- Left/Right now changes VALUES (Numpad 4/6)
+_G.MenuLeft = function()
+local item = buttonList[selectedIndex]
+if item and item.cycleFunc then
+item.cycleFunc(-1)
+UpdateButtonVisuals()
+end
+end
+
+_G.MenuRight = function()
+local item = buttonList[selectedIndex]
+if item and item.cycleFunc then
+item.cycleFunc(1)
+UpdateButtonVisuals()
+end
+end
+
+-- Confirm now EXECUTES (Numpad 5)
+_G.MenuConfirm = function()
+local item = buttonList[selectedIndex]
+if item and item.execFunc then
+pcall(item.execFunc)
+end
+UpdateButtonVisuals()
+end
+
+-- =================================================================================
+-- SECTION 6: UI CONSTRUCTION
+-- =================================================================================
+
+
+-- DIMENSIONS (Doubled Size)
+local btnHeight = 90
+local spacing = 13
+local headerSpace = 120
+local footerSpace = 55
+local panelWidth = 640
+
+-- Button width should match panel width (small margins)
+local buttonWidth = panelWidth - 60 -- leave 30 px padding each side
+
+-- Helper to add buttons
+local tempButtons = {}
+
+local function queueButton(label, execFunc, cycleFunc, isActiveFunc, dynamicLabelFunc, isValueBtn)
+local item = {
+label = label,
+execFunc = execFunc,
+cycleFunc = cycleFunc,
+isActive = isActiveFunc,
+isValueBtn = isValueBtn,
+dynamicLabelFunc = dynamicLabelFunc
+}
+table.insert(tempButtons, item)
+end
+
+-- --- 1. DEFINE BUTTONS ---
+
+-- GROUP 1: EXECUTE ONCE (Top)
+queueButton("Kill All NPC", _G.RunKillNPC, nil, nil, nil, false)
+queueButton("Permanent Buffs", _G.RunPermanentBuffs, nil, nil, nil, false)
+queueButton("Remove Buffs", _G.RunRemoveBuffs, nil, nil, nil, false)
+
+
+-- GROUP 2: TOGGLES (On/Off)
+local function makeToggle(name, varName, onFunc, offFunc)
+local toggle = function()
+_G[varName] = not _G[varName]
+if _G[varName] then pcall(onFunc) else pcall(offFunc) end
+UpdateButtonVisuals()
+end
+queueButton(
+name,
+toggle,
+function(d) toggle() end,
+function() return _G[varName] end,
+function() return name .. " < " .. (_G[varName] and "ON" or "OFF") .. " >" end,
+true
+)
+end
+
+makeToggle("Godmode", "GM_GODMODE",
+function()
+local mp_local = G and G.main_player
+if mp_local and mp_local.add_buff then
+pcall(mp_local.add_buff, mp_local, 70063)
+write_debug("[God] ✔ God mode enabled")
+else
+write_debug("[God] ✘ Player not found")
+end
+end,
+function()
+local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+if a and a.rm_buff then
+pcall(a.rm_buff, 70063)
+write_debug("[God] ✔ God mode disabled")
+else
+write_debug("[God] ✘ Action module missing")
+end
+end)
+
+makeToggle("Inf Stamina", "GM_STAMINA",
+function()
+local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+if a then a.set_lock_res_consume(true) end
+end,
+function()
+local a = portable.import("hexm.client.ui.windows.gm.gm_combat.combat_train_action")
+if a then a.set_lock_res_consume(false) end
+end)
+
+makeToggle("Online Buffs", "GM_ONLINE_BUFFS",
+function() ApplyOnlineBuffs() end,
+function() RemoveOnlineBuffs() end)
+
+makeToggle("OP Buffs", "GM_OP_BUFFS",
+function() ApplyOPBuffs() end,
+function() RemoveOPBuffs() end)
+
+table.insert(tempButtons, {
+label = "Life Skill",
+isValueBtn = true,
+dynamicLabelFunc = GetLifeSkillLabel,
+cycleFunc = CycleLifeSkill,
+execFunc = CycleLifeSkill -- CLICK WILL NOW WORK
+})
+
+
+
+-- GROUP 3: CHANGEABLE VALUES (Bottom)
+
+queueButton("Auto Loot", _G.ExecuteLoot, function(d) _G.CycleState("LOOT_STATE", d, 2) end, function() return _G.LOOT_STATE > 0 end,
+function() return "Auto Loot < " .. STATE_LABELS[_G.LOOT_STATE] .. " >" end, true)
+
+
+--queueButton("FOV", nil, function(d) _G.CycleFOV(d) end, nil,
+-- function() return "Field of View < " .. FOV_VALUES[_G.FOV_INDEX] .. " >" end, true)
+
+-- --- 2. CALCULATE DYNAMIC HEIGHT ---
+local contentHeight = #tempButtons * (btnHeight + spacing)
+local totalHeight = headerSpace + contentHeight + footerSpace
+
+-- --- 3. CREATE PANEL ---
+local panel = ccui.Layout:create()
+
+-- IMPORTANT: keep the panel inside screen if it's taller than screen
+local screenW, screenH = size.width, size.height
+panel:setContentSize(cc.size(panelWidth, totalHeight))
+panel:setBackGroundColorType(1)
+panel:setBackGroundColor(C_BG)
+panel:setBackGroundColorOpacity(70)
+
+-- Clamp position so you can actually see it
+local startX = 20
+local startY = math.max(20, screenH - totalHeight - 780)
+panel:setPosition(cc.p(startX, startY))
+
+scene:addChild(panel, 9999)
+_G.GM_MENU = panel
+
+write_debug(("UI: screen=%dx%d panel=%dx%d buttons=%d"):format(screenW, screenH, panelWidth, totalHeight, #tempButtons))
+
+-- --- 4. CREATE HEADER ---
+local headerY = totalHeight - 20
+local headerOriginalY = headerY
+
+local headerLeft = ccui.Text:create("Custom Menu", "Arial", 54)
+headerLeft:setColor(cc.c3b(255, 230, 120))
+headerLeft:enableOutline(cc.c4b(0, 255, 0, 255), 2)
+headerLeft:setAnchorPoint(cc.p(0, 1))
+panel:addChild(headerLeft)
+headerLeft:setTouchEnabled(true)
+headerLeft:addTouchEventListener(function(s,e)
+if e == 2 and isMinimized then
+ToggleMinimize()
+end
+end)
+
+local headerRight = ccui.Text:create("", "Arial", 54)
+headerRight:setColor(cc.c3b(140, 20, 20)) -- dark red
+headerRight:setAnchorPoint(cc.p(0, 1))
+panel:addChild(headerRight)
+
+-- Center the two texts as a single combined line
+local w1 = headerLeft:getContentSize().width
+local w2 = headerRight:getContentSize().width
+local totalW = w1 + w2
+local startX = (panelWidth - totalW) / 2
+
+headerLeft:setPosition(cc.p(startX, headerY))
+headerRight:setPosition(cc.p(startX + w1, headerY))
+
+
+-- --- 5. CREATE BUTTONS ---
+local startY = totalHeight - headerSpace
+for i, itemData in ipairs(tempButtons) do
+local b = ccui.Button:create()
+b:setTitleFontSize(56)
+b:setScale9Enabled(true)
+b:setContentSize(cc.size(buttonWidth, btnHeight))
+b:setColor(C_BG) -- Invisible bg
+
+-- IMPORTANT: we will render our own text for ALL buttons
+b:setTitleText("")
+
+-- Position: Top Down
+b:setAnchorPoint(cc.p(0.5, 1))
+b:setPosition(cc.p(panelWidth / 2, startY - ((i-1) * (btnHeight + spacing))))
+
+b:addTouchEventListener(function(sender, eventType)
+if eventType == 2 then
+if itemData.execFunc then pcall(itemData.execFunc) end
+UpdateButtonVisuals()
+end
+end)
+
+-- Text nodes for consistent coloring
+local mainTextNode = nil
+local valueTextNode = nil
+
+if itemData.isValueBtn then
+-- Main (left) part
+mainTextNode = ccui.Text:create("", "Arial", 56)
+mainTextNode:setAnchorPoint(cc.p(0, 0.5))
+mainTextNode:setPosition(cc.p(30, btnHeight / 2))
+b:addChild(mainTextNode, 1)
+
+-- Value (right) part: < ... >
+valueTextNode = ccui.Text:create("", "Arial", 56)
+valueTextNode:setAnchorPoint(cc.p(1, 0.5))
+valueTextNode:setPosition(cc.p(buttonWidth - 30, btnHeight / 2))
+b:addChild(valueTextNode, 1)
+else
+-- Normal button: single centered text
+mainTextNode = ccui.Text:create("", "Arial", 56)
+mainTextNode:setAnchorPoint(cc.p(0.5, 0.5))
+mainTextNode:setPosition(cc.p(buttonWidth / 2, btnHeight / 2))
+b:addChild(mainTextNode, 1)
+end
+
+-- Store functionality
+local btnObj = {
+btn = b,
+execFunc = itemData.execFunc,
+cycleFunc = itemData.cycleFunc,
+isActive = itemData.isActive,
+
+-- expose nodes so SECTION 5 can color them
+mainText = mainTextNode,
+valueText = valueTextNode,
+
+updateText = function()
+local text = itemData.label
+if itemData.dynamicLabelFunc then
+text = itemData.dynamicLabelFunc()
+elseif itemData.isActive then
+local val = itemData.isActive()
+text = itemData.label .. (val and " < ON >" or " < OFF >")
+end
+
+if valueTextNode then
+-- Split into 2 parts: "Something " + "<...>"
+local mainPart, valuePart = text:match("^(.-)%s*(<.*>)%s*$")
+if not mainPart then
+mainPart = text
+valuePart = ""
+end
+mainTextNode:setString(mainPart)
+valueTextNode:setString(valuePart)
+else
+-- Normal buttons: everything goes into the single main text node
+mainTextNode:setString(text)
+end
+end
+}
+
+panel:addChild(b)
+table.insert(buttonList, btnObj)
+end
+
+
+
+-- Initialize
+UpdateButtonVisuals()
+
+
+-- =================================================================================
+-- SECTION 7: DRAGGING + MINIMIZE + RESTORE (FINAL + WORKING)
+-- =================================================================================
+
+local btn_minimize = nil
+local originalSize = nil
+local isMinimized = false
+
+---------------------------------------------------------
+-- DRAG LIMITS
+---------------------------------------------------------
+local function keepPanelInBounds(newX, newY)
+local pSize = panel:getContentSize()
+local minX, maxX = 0, size.width - pSize.width
+local minY, maxY = 0, size.height - pSize.height
+return math.max(minX, math.min(maxX, newX)), math.max(minY, math.min(maxY, newY))
+end
+
+---------------------------------------------------------
+-- DRAGGING LOGIC
+---------------------------------------------------------
+panel:setTouchEnabled(true)
+panel:addTouchEventListener(function(sender, eventType)
+if eventType == 0 then
+local tPos = sender:getTouchBeganPosition()
+local pPos = panel:getPosition()
+dragOffset = cc.p(tPos.x - pPos.x, tPos.y - pPos.y)
+isDragging = true
+return true
+
+elseif eventType == 1 and isDragging then
+local tPos = sender:getTouchMovePosition()
+local newX, newY = keepPanelInBounds(tPos.x - dragOffset.x, tPos.y - dragOffset.y)
+panel:setPosition(cc.p(newX, newY))
+return true
+
+elseif eventType == 2 or eventType == 3 then
+isDragging = false
+return true
+end
+end)
+
+---------------------------------------------------------
+-- MINIMIZE BUTTON (ON PANEL)
+---------------------------------------------------------
+btn_minimize = ccui.Button:create()
+btn_minimize:setScale9Enabled(true)
+btn_minimize:setContentSize(cc.size(110, 110))
+btn_minimize:setTitleFontSize(64)
+btn_minimize:setTitleColor(cc.c3b(255, 255, 120))
+btn_minimize:setTitleText("−")
+btn_minimize:setPosition(cc.p(panelWidth - 60, totalHeight - 70))
+panel:addChild(btn_minimize, 9999)
+
+---------------------------------------------------------
+-- TOGGLE MENU (− <-> ⬜)
+---------------------------------------------------------
+local function ToggleMenu()
+isMinimized = not isMinimized
+
+if isMinimized then
+originalSize = panel:getContentSize()
+
+for _, item in ipairs(buttonList) do
+item.btn:setVisible(false)
+end
+
+if headerLeft then
+headerLeft:setVisible(false)
+end
+
+panel:setContentSize(cc.size(140, 140))
+panel:setBackGroundColorOpacity(0)
+
+btn_minimize:setVisible(true)
+btn_minimize:setTitleText("⬜")
+btn_minimize:setContentSize(cc.size(80, 80))
+btn_minimize:setTitleFontSize(42)
+btn_minimize:setPosition(cc.p(panelWidth - 60, totalHeight - 70))
+
+else
+if originalSize then
+panel:setContentSize(originalSize)
+end
+
+panel:setBackGroundColorOpacity(100)
+
+for _, item in ipairs(buttonList) do
+item.btn:setVisible(true)
+end
+
+if headerLeft then
+headerLeft:setVisible(true)
+end
+
+btn_minimize:setVisible(true)
+btn_minimize:setTitleText("−")
+btn_minimize:setContentSize(cc.size(110, 110))
+btn_minimize:setTitleFontSize(64)
+btn_minimize:setPosition(cc.p(panelWidth - 60, totalHeight - 70))
+end
+end
+
+btn_minimize:addTouchEventListener(function(s,e)
+if e == 2 then
+ToggleMenu()
+end
+end)
+
+---------------------------------------------------------
+-- FLOATING RESTORE BOX (⬜) FOR NUMPAD − DLL HIDE
+---------------------------------------------------------
+local RestoreBtn = ccui.Button:create()
+RestoreBtn:setScale9Enabled(true)
+RestoreBtn:setContentSize(cc.size(80, 80))
+RestoreBtn:setTitleFontSize(42)
+RestoreBtn:setTitleColor(cc.c3b(255, 255, 120))
+RestoreBtn:setTitleText("⬜")
+RestoreBtn:setVisible(false)
+
+-- IMPORTANT: Add to SCENE, NOT PANEL
+cc.Director:getInstance():getRunningScene():addChild(RestoreBtn, 999999)
+
+local lastPanelPos = panel:getPosition()
+
+RestoreBtn:addTouchEventListener(function(s, e)
+if e == 2 then
+if _G.GM_MENU then
+_G.GM_MENU:setVisible(true)
+end
+RestoreBtn:setVisible(false)
+end
+end)
+
+local function TickCheck()
+if not _G.GM_MENU then
+RestoreBtn:setVisible(false)
+return
+end
+
+-- When menu visible → track position + hide restore btn
+if _G.GM_MENU:isVisible() then
+lastPanelPos = panel:getPosition()
+RestoreBtn:setVisible(false)
+return
+end
+
+-- Menu hidden by DLL toggle → show floating restore box
+local x = lastPanelPos.x + panelWidth - 60
+local y = lastPanelPos.y + totalHeight - 70
+RestoreBtn:setPosition(cc.p(x, y))
+RestoreBtn:setVisible(true)
+end
+
+local scheduler = cc.Director:getInstance():getScheduler()
+scheduler:scheduleScriptFunc(TickCheck, 0.15, false)
+
+
+UpdateButtonVisuals()
+
+
+-- Final Success Report
+if DEBUG_FILE_ENABLED then
+pcall(function()
+local file = io.open(DEBUG_FILE_PATH, "a")
+if file then
+file:write(os.date("%H:%M:%S") .. " === SCRIPT COMPLETED SUCCESSFULLY ===\n")
+file:close()
+end
+end)
+end

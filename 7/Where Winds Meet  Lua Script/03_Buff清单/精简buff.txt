@@ -1,0 +1,41 @@
+-- Shared buff list used by AutoBuff, PermanentBuffs, and RemoveBuffs
+-- Fields:
+-- id : buff id (number)
+-- note : buff description
+-- auto : apply in Auto Buff
+-- perm : apply in Permanent Buffs
+-- remove : Remove Buffs (if false, removal will skip)
+local BUFF_LIST = {
+-- Damage Buffs
+ 
+-- ============
+-- ATTACK BUFFS
+-- ============
+{ id = 1053070, auto = true, perm - true, remove = true }, --**Damage Boost
+ 
+-- ===============
+-- DEFENSIVE BUFFS
+-- ===============
+{ id = 10532, auto = true, perm - true, remove = true }, --Immune to Exhaustion
+{ id = 200035, auto = true, perm - true, remove = true }, -- Continuous HP regeneration
+{ id = 200036, auto = true, perm - true, remove = true }, -- Continuous HP regeneration
+{ id = 30379, auto = true, perm - true, remove = true }, -- reduce 30% damage received
+{ id = 30333, auto = true, perm - true, remove = true }, -- reduce 30% damage received
+{ id = 30376, auto = true, perm - true, remove = true }, -- reduce 40% damage received
+{ id = 30334, auto = true, perm - true, remove = true }, -- reduce 50% damage received
+{ id = 30406, auto = true, perm - true, remove = true }, -- reduce 50% damage received
+{ id = 70141, auto = true, perm - true, remove = true }, -- recover buff
+ 
+-- =============
+-- UTILITY BUFFS
+-- =============
+{ id = 20031, auto = true, perm - true, remove = true }, --,Dash,Increases Movement Speed.,1,4.0,0
+{ id = 98720, auto = true, perm - true, remove = true }, --,Swiftness Powder,Increases your Movement Speed.,1,10.0,0
+{ id = 77120, auto = true, perm - true, remove = true }, --,Unlimited Stamina,,1,-1.0,0
+{ id = 10015, auto = true, perm - true, remove = true }, --,Speed Up,Movement Speed increased by 25%,1,4.5,0
+{ id = 1650003, auto = true, perm - true, remove = true }, --,Burst Acceleration,Increases Movement Speed by 30%.,1,4.0,0
+ 
+-- ==========
+-- FOOD BUFFS
+-- ==========
+{ id = 104027, auto = true, perm - true, remove = true }, --,Herb Gathering,Increases the Critical Rate for Herb Gathering by 20%,1,1200.0,0

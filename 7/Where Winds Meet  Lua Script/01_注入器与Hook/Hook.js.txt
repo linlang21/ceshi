@@ -1,0 +1,406 @@
+'use strict';
+ 
+// 1. SAFETY CHECK
+if (Process.platform !== 'windows' || Process.arch !== 'x64')
+  throw new Error('Windows x64 only.');
+ 
+const MODULE = "wwm.exe";
+ 
+// =================================================================================
+// CONFIGURATION & HOTKEYS
+// =================================================================================
+ 
+// MODIFIER KEY Alt
+const VK_MENU             = 0x12; 
+ 
+// SYSTEM KEYS
+const HOTKEY_F3           = 0x72; // F3: Inject Menu
+const HOTKEY_NUMPAD_MINUS = 0x6D; // Numpad - : Toggle Menu Visibility
+const HOTKEY_NUMPAD_MULTIPLY = 0x6A; // Numpad * : Buff Menu Back
+ 
+// NAVIGATION KEYS Raw Numpad
+const HOTKEY_NUMPAD8      = 0x68; // Up
+const HOTKEY_NUMPAD2      = 0x62; // Down
+const HOTKEY_NUMPAD4      = 0x64; // Left
+const HOTKEY_NUMPAD6      = 0x66; // Right
+const HOTKEY_NUMPAD5      = 0x65; // Confirm
+ 
+// ACTION KEYS For Alt combinations
+const HOTKEY_NUMPAD1      = 0x61; 
+const HOTKEY_NUMPAD3      = 0x63; 
+const HOTKEY_NUMPAD7      = 0x67; 
+const HOTKEY_NUMPAD9      = 0x69; 
+ 
+// PATHS Only Test.lua needed
+const TEST_PATH = "C:\\temp\\Where Winds Meet\\Scripts\\Test.lua";
+ 
+/* =================================================================================
+   LUA CHUNKS THE PAYLOADS
+   ================================================================================= */
+ 
+// 1. Loader for the Main Menu Still loads from file
+const LUA_LOAD_MENU = `
+local path = [[${TEST_PATH}]]
+local f, err = loadfile(path)
+if f then pcall(f) else print("Err loading menu:", err) end
+`;
+ 
+// 2. Command Strings These run the functions inside Test.lua
+const CMD_MENU_VISIBLE     = "if _G.GM_MENU then local willHide=_G.GM_MENU:isVisible(); if willHide and _G.CloseAllSubMenus then pcall(_G.CloseAllSubMenus) end; _G.GM_MENU:setVisible(not willHide); if (not willHide) and _G.ForceUpdateVisuals then pcall(_G.ForceUpdateVisuals) end end";
+const CMD_TOGGLE_SPEED     = "if _G.ToggleSpeed then _G.ToggleSpeed() end";
+const CMD_TOGGLE_LOOT_LOOP = "if _G.ToggleAutoLootLoop then _G.ToggleAutoLootLoop() end";
+const CMD_RUN_RECOVER      = "if _G.RunRecover then _G.RunRecover() end";
+const CMD_RUN_KILLNPC      = "if _G.RunKillNPC then _G.RunKillNPC() end";
+const CMD_RUN_AUTOLOOT     = "if _G.RunAutoLoot then _G.RunAutoLoot() end";
+ 
+// 3. Navigation Commands (ONLY when main menu is visible)
+const CMD_NAV_UP      = "if _G.GM_MENU and _G.GM_MENU:isVisible() and _G.MenuUp then _G.MenuUp() end";
+const CMD_NAV_DOWN    = "if _G.GM_MENU and _G.GM_MENU:isVisible() and _G.MenuDown then _G.MenuDown() end";
+const CMD_NAV_LEFT    = "if _G.GM_MENU and _G.GM_MENU:isVisible() and _G.MenuLeft then _G.MenuLeft() end";
+const CMD_NAV_RIGHT   = "if _G.GM_MENU and _G.GM_MENU:isVisible() and _G.MenuRight then _G.MenuRight() end";
+const CMD_NAV_CONFIRM = "if _G.GM_MENU and _G.GM_MENU:isVisible() and _G.MenuConfirm then _G.MenuConfirm() end";
+ 
+// Buff menu back can remain independent (so you can back out even if main menu is hidden)
+const CMD_BUFF_BACK = "if _G.BuffMenuOpen and _G.BuffMenuBack then _G.BuffMenuBack() end";
+ 
+ 
+/* =================================================================================
+   MEMORY HELPERS SIGNATURES
+   ================================================================================= */
+ 
+const is64 = Process.pointerSize === 8;
+ 
+function writeSize(ptr, v) {
+  if (is64) ptr.writeU64(v);
+  else      ptr.writeU32(v);
+}
+ 
+function readSize(ptr) {
+  return is64 ? ptr.readU64() : ptr.readU32();
+}
+ 
+const NULL_PTR = ptr(0);
+const mod  = Process.getModuleByName(MODULE);
+const base = mod.base;
+ 
+function getConsoleWidth() {
+  try {
+    if (typeof process !== 'undefined' && process.stdout && process.stdout.columns && Number.isInteger(process.stdout.columns)) {
+      return process.stdout.columns;
+    }
+    if (typeof console !== 'undefined' && console.columns && Number.isInteger(console.columns)) {
+      return console.columns;
+    }
+  } catch (e) {
+  }
+  return 80;
+}
+ 
+function formatDateForDivider(d) {
+  const dt = d instanceof Date ? d : new Date();
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const month = monthNames[dt.getMonth()];
+  const day = dt.getDate();
+  let hour = dt.getHours();
+  const minute = dt.getMinutes();
+  const ampm = hour >= 12 ? "PM" : "AM";
+  hour = hour % 12;
+  if (hour === 0) hour = 12;
+  const minuteStr = minute < 10 ? "0" + minute : String(minute);
+  return `${month} ${day} ${hour}:${minuteStr} ${ampm}`;
+}
+ 
+function buildDividerWithContent(content) {
+  const width = Math.max(40, getConsoleWidth());
+  const overhead = 2; // '[' and ']'
+  const minSide = 1;
+  const remaining = Math.max(0, width - overhead - content.length);
+  const left = Math.floor(remaining / 2);
+  const right = remaining - left;
+  const leftPad = "=".repeat(Math.max(minSide, left));
+  const rightPad = "=".repeat(Math.max(minSide, right));
+  return `[${leftPad}${content}${rightPad}]`;
+}
+ 
+function logRaw(s) {
+  console.log(s);
+}
+function logDivider(note) {
+  const content = note ? ` ${note} ` : " ";
+  logRaw(buildDividerWithContent(content));
+}
+function logInfo(msg) {
+  logRaw(msg);
+}
+ 
+/* ========= Console updater =========
+*/
+function clearConsole() {
+  try {
+    process.stdout.write('\x1b[2J\x1b[0f');
+  } catch (e) {
+    for (let i = 0; i < 100; i++) console.log('');
+  }
+}
+ 
+function reprintHeaderBlock() {
+  const timeLine = buildDividerWithContent(` ${formatDateForDivider(new Date())} `);
+  logRaw(timeLine);
+ 
+  logDivider("USAGE");
+  logInfo("[!] IMPORTANT: Press F3 first to load the menu logic.");
+  logDivider();
+  logInfo("[HOTKEY] Numpad - : Show/Hide Menu");
+  logInfo("[NAVIGATION] Numpad 8/2/4/6/5/* : Up/Down/Left/Right/Confirm/Close Buff List Menu");
+  logDivider();
+  logInfo("[HOTKEY] Alt + Numpad 1 : Toggle Speed");
+  logInfo("[HOTKEY] Alt + Numpad 2 : Toggle Loot Loop");
+  logInfo("[HOTKEY] Alt + Numpad 5 : Kill NPC");
+  logInfo("[HOTKEY] Alt + Numpad 7 : Recover HP/Stam");
+  logInfo("[HOTKEY] Alt + Numpad 9 : Manual Loot");
+  logDivider();
+ 
+  logRaw(buildDividerWithContent(" DON'T FORGET TO UPVOTE CONTRIBUTORS "));
+}
+ 
+function printHeaderOnce() {
+  const timeLine = buildDividerWithContent(` ${formatDateForDivider(new Date())} `);
+  try {
+    process.stdout.write(timeLine + '\n');
+  } catch (e) {
+    console.log(timeLine);
+  }
+ 
+  // USAGE block
+  logDivider("USAGE");
+  logInfo("[!] IMPORTANT: Press F3 first to load the menu logic.");
+  logDivider();
+  logInfo("[HOTKEY] Numpad - : Show/Hide Menu");
+  logInfo("[NAVIGATION] Numpad 8/2/4/6/5/* : Up/Down/Left/Right/Confirm/Close Buff List Menu");
+  logDivider();
+  logInfo("[HOTKEY] Alt + Numpad 1 : Toggle Speed");
+  logInfo("[HOTKEY] Alt + Numpad 2 : Toggle Loot Loop");
+  logInfo("[HOTKEY] Alt + Numpad 5 : Kill NPC");
+  logInfo("[HOTKEY] Alt + Numpad 7 : Recover HP/Stam");
+  logInfo("[HOTKEY] Alt + Numpad 9 : Manual Loot");
+  logDivider();
+ 
+  logRaw(buildDividerWithContent(" DON'T FORGET TO UPVOTE CONTRIBUTORS "));
+}
+ 
+ 
+function startClearAndUpdateLoop(intervalMs = 60000) {
+  printHeaderOnce();
+ 
+  setInterval(() => {
+    clearConsole();
+    reprintHeaderBlock();
+  }, intervalMs);
+}
+ 
+/* =================================================================================
+   MAIN
+   ================================================================================= */
+ 
+try {
+ 
+ 
+  // Signatures
+  const SIG_LUA_LOAD_OFFICIAL = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B E9 49 8B F1";
+  const SIG_LUA_LOAD_STEAM    = "48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1 4D 8B C8 4C 8B C2 48 8D 54 24";
+ 
+  function scanSignature(sig, platformLabel) {
+    logDivider("STARTUP");
+    logInfo("[*] Resolving lua_load signature official -> steam");
+    logDivider();
+    logDivider();
+    logInfo(`[*] Scanning for lua_load signature ${platformLabel}`);
+    logDivider();
+    const res = Memory.scanSync(base, mod.size, sig);
+    if (!res.length) {
+      logDivider();
+      logInfo(`[✘] lua_load (${platformLabel}) signature NOT found → ${sig}`);
+      logDivider();
+      return null;
+    }
+    const addr = res[0].address;
+    logDivider();
+    logInfo(`[✔] lua_load (${platformLabel}) signature FOUND → ${sig} @ offset ${addr.sub(base)}`);
+    logDivider();
+    return addr;
+  }
+ 
+  let lua_load_addr = scanSignature(SIG_LUA_LOAD_OFFICIAL, "official");
+  if (!lua_load_addr) {
+    lua_load_addr = scanSignature(SIG_LUA_LOAD_STEAM, "steam");
+  }
+ 
+  if (!lua_load_addr) {
+    logInfo("[✘] lua_load not found after scanning both signatures");
+    throw new Error("lua_load not found");
+  }
+ 
+  const SIG_LUA_PCALL = "48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58 49 63 C1 41 8B E8 48 8B F9 45 85 C9";
+  logDivider();
+  logInfo("[*] Scanning for lua_pcall signature");
+  logDivider();
+  const resPcall = Memory.scanSync(base, mod.size, SIG_LUA_PCALL);
+  if (!resPcall.length) {
+    logInfo(`[✘] lua_pcall signature NOT found → ${SIG_LUA_PCALL}`);
+    logInfo("[✘] Failed to bind/start runtime");
+    throw new Error("lua_pcall not found");
+  }
+  const lua_pcall_addr = resPcall[0].address;
+  logInfo(`[✔] lua_pcall signature FOUND → ${SIG_LUA_PCALL} @ offset ${lua_pcall_addr.sub(base)}`);
+ 
+  logDivider("BINDING FUNCTIONS");
+  logInfo("[*] Creating NativeFunction wrappers for lua_load and lua_pcall");
+ 
+  // Create NativeFunction wrappers
+  const lua_load = new NativeFunction(lua_load_addr, "int", ["pointer", "pointer", "pointer", "pointer", "pointer"]);
+  const lua_pcall = new NativeFunction(lua_pcall_addr, "int", ["pointer", "int", "int", "int", "pointer", "pointer"]);
+ 
+  logInfo(`[OK] Bound lua_load at ${lua_load_addr.sub(base)} and lua_pcall at ${lua_pcall_addr.sub(base)}`);
+  logInfo("[OK] Hook Loaded.");
+  logInfo("[OK] Runtime initialized (interceptor attached).");
+  console.log("[✔] Attachment complete. Hotkeys and auto-inject enabled.");
+  logDivider();
+ 
+  startClearAndUpdateLoop(60000); // update every 60 seconds
+ 
+  /* =================================================================================
+     INJECTION LOGIC
+     ================================================================================= */
+ 
+  const luaReader = new NativeCallback(function (L, data, pSize) {
+    const ls        = data;
+    const sPtr      = ls;
+    const sizeField = ls.add(Process.pointerSize);
+    let remaining = readSize(sizeField);
+    if (remaining === 0) {
+      writeSize(pSize, 0);
+      return NULL_PTR;
+    }
+    writeSize(pSize, remaining);
+    writeSize(sizeField, 0);
+    return sPtr.readPointer();
+  }, "pointer", ["pointer", "pointer", "pointer"]);
+ 
+  function allocScriptBuffer(src) {
+    const buf = Memory.allocUtf8String(src);
+    let len = 0;
+    while (buf.add(len).readU8() !== 0) len++;
+    return { buf, len };
+  }
+ 
+  const CHUNK_NAME = Memory.allocUtf8String("=(inject)");
+  const MODE_TEXT  = Memory.allocUtf8String("t");
+  const LOADS      = Memory.alloc(Process.pointerSize * 2);
+ 
+  function prepareLoadS(scriptBuf, scriptLen) {
+    LOADS.writePointer(scriptBuf);
+    writeSize(LOADS.add(Process.pointerSize), scriptLen);
+    return LOADS;
+  }
+ 
+  let LOG_KEY_EVENTS = true;       // set true to enable keypress/hotkey logs
+  let LOG_INJECTION_EVENTS = true; // set true to enable injection lifecycle logs
+ 
+  function injectString(L, code) {
+    if (LOG_INJECTION_EVENTS) logInfo(`[INJ] injectString called L=${L} code_len=${code.length}`);
+    const { buf, len } = allocScriptBuffer(code);
+    const loadS = prepareLoadS(buf, len);
+    
+    if (LOG_INJECTION_EVENTS) logInfo("[INJ] Calling lua_load");
+    const loadRes = lua_load(L, luaReader, loadS, CHUNK_NAME, MODE_TEXT);
+    if (loadRes !== 0) {
+      console.error("[!] lua_load error:", loadRes, "chunk=", CHUNK_NAME.readUtf8String());
+      return;
+    }
+    if (LOG_INJECTION_EVENTS) logInfo("[INJ] lua_load returned 0 success");
+ 
+    if (LOG_INJECTION_EVENTS) logInfo("[INJ] Calling lua_pcall");
+    const pcallRes = lua_pcall(L, 0, 0, 0, NULL_PTR, NULL_PTR);
+    if (pcallRes !== 0) {
+      console.error("[!] lua_pcall error:", pcallRes);
+    } else {
+      if (LOG_INJECTION_EVENTS) logInfo("[INJ] lua_pcall returned 0 success");
+    }
+  }
+ 
+  /* =================================================================================
+     QUEUE INTERCEPTOR
+     ================================================================================= */
+ 
+  let queue = [];
+  let inInjection = false;
+ 
+  function trigger(code, name) {
+    queue.push(code);
+    if (LOG_KEY_EVENTS) {
+      logInfo(`[TRG] Queued command "${name}" queue_len=${queue.length}`);
+    }
+  }
+ 
+  Interceptor.attach(lua_pcall_addr, {
+    onEnter(args) {
+      if (inInjection || queue.length === 0) return;
+      const L = args[0];
+      inInjection = true;
+      if (LOG_INJECTION_EVENTS) logInfo(`[INJ] Interceptor triggered for injection L=${L} queue_len=${queue.length}`);
+      try {
+        if (LOG_INJECTION_EVENTS) logInfo(`[Q] Queue snapshot before injection: len=${queue.length}`);
+        const code = queue.shift();
+        if (LOG_INJECTION_EVENTS) logInfo(`[Q] Popped code from queue new_len=${queue.length}`);
+        injectString(L, code);
+      } catch (e) {
+        console.error("[!] Exception during injection:", e);
+      } finally {
+        inInjection = false;
+        if (LOG_INJECTION_EVENTS) logInfo("[INJ] Injection cycle complete");
+      }
+    }
+  });
+ 
+  /* =================================================================================
+     INPUT LISTENER
+     ================================================================================= */
+ 
+  (function setupHotkeys() {
+    const user32 = Module.load("user32.dll");
+    const GetAsyncKeyState = new NativeFunction(user32.getExportByName("GetAsyncKeyState"), "int16", ["int"]);
+ 
+    setInterval(() => {
+      // --- ALWAYS ACTIVE ---
+      if (GetAsyncKeyState(HOTKEY_F3) & 1) trigger(LUA_LOAD_MENU, "Inject Menu (F3)");
+ 
+      // --- CHECK MODIFIER ---
+      const isAltDown = (GetAsyncKeyState(VK_MENU) & 0x8000) !== 0;
+ 
+      if (isAltDown) {
+          // === ALT + KEYS ===
+          if (GetAsyncKeyState(HOTKEY_NUMPAD1) & 1) trigger(CMD_TOGGLE_SPEED,     "Toggle Speed (Alt+1)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD2) & 1) trigger(CMD_TOGGLE_LOOT_LOOP, "Toggle Loot Loop (Alt+2)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD5) & 1) trigger(CMD_RUN_KILLNPC,      "Kill NPC (Alt+5)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD7) & 1) trigger(CMD_RUN_RECOVER,      "Recover (Alt+7)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD9) & 1) trigger(CMD_RUN_AUTOLOOT,     "Manual Loot (Alt+9)");
+          
+      } else {
+          // === RAW KEYS ===
+          if (GetAsyncKeyState(HOTKEY_NUMPAD_MINUS) & 1) trigger(CMD_MENU_VISIBLE, "Toggle Menu Visibility (-)");
+ 
+          // Navigation
+          if (GetAsyncKeyState(HOTKEY_NUMPAD8) & 1) trigger(CMD_NAV_UP,      "Menu Up (8)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD2) & 1) trigger(CMD_NAV_DOWN,    "Menu Down (2)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD4) & 1) trigger(CMD_NAV_LEFT,    "Menu Left (4)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD6) & 1) trigger(CMD_NAV_RIGHT,   "Menu Right (6)");
+          if (GetAsyncKeyState(HOTKEY_NUMPAD5) & 1) trigger(CMD_NAV_CONFIRM, "Menu Confirm (5)");
+		  if (GetAsyncKeyState(HOTKEY_NUMPAD_MULTIPLY) & 1) trigger(CMD_BUFF_BACK, "Buff Menu Back (*)");
+      }
+    }, 100);
+  })();
+ 
+} catch (e) {
+  console.error("[✘] Failed to bind/start runtime:", e);
+  console.error("[✘] Binding failed despite signature match. Consider updating signatures.");
+}

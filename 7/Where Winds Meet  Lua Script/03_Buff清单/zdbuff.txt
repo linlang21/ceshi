@@ -1,0 +1,170 @@
+-- 6. AUTO BUFF
+_G.RunAutoBuff = function()
+    local mp = G and G.main_player
+    if not mp then return end
+    --to disable any of these buffs add (--) before the line:
+    --Example:
+    --pcall(mp.add_buff, mp, xxxxxxx)
+    --To enable it back remove the (--) at the first part of the line
+ 
+    -- Damage Buffs
+    pcall(mp.add_buff, mp, 30302)  -- increase damage
+    pcall(mp.add_buff, mp, 107031) -- increase damage (stacks)
+    pcall(mp.add_buff, mp, 109040) -- increase HP and crit Fledgeling
+    pcall(mp.add_buff, mp, 109041) -- increase HP and crit Fledgeling
+    pcall(mp.add_buff, mp, 200093) -- +10% HP-based damage
+    pcall(mp.add_buff, mp, 200094) -- +15% HP-based damage
+    pcall(mp.add_buff, mp, 200123) -- +25% HP-based damage
+    pcall(mp.add_buff, mp, 30028)  -- Concentration: Increases damage (10 seconds)
+ 
+ 
+    -- Defense Buffs
+    pcall(mp.add_buff, mp, 30303)  -- increase defense
+    pcall(mp.add_buff, mp, 30379)  -- reduce 30% damage received
+    pcall(mp.add_buff, mp, 30333)  -- reduce 30% damage received
+    pcall(mp.add_buff, mp, 30376)  -- reduce 40% damage received
+    pcall(mp.add_buff, mp, 30334)  -- reduce 50% damage received
+    pcall(mp.add_buff, mp, 30406)  -- reduce 50% damage received
+    pcall(mp.add_buff, mp, 30372)  -- invincible, reduce 90% true damage
+    pcall(mp.add_buff, mp, 30310)  -- iron body
+    pcall(mp.add_buff, mp, 70184)  -- defense can resist full screen damage VIP
+    pcall(mp.add_buff, mp, 200071) -- Overlord /霸体 (super armor)
+    pcall(mp.add_buff, mp, 200059) -- Shield
+    pcall(mp.add_buff, mp, 200083) -- Shield
+    pcall(mp.add_buff, mp, 200099) -- Shield = 25% of max HP
+    pcall(mp.add_buff, mp, 200086) -- 80% damage immunity (HP-based)
+	pcall(mp.add_buff, mp, 30366)  -- Completely blocks the next 3 hits
+ 
+ 
+    -- Healing Buffs
+    pcall(mp.add_buff, mp, 107011) -- increase healing damage
+    pcall(mp.add_buff, mp, 30314)  -- drunk, damage + lifesteal
+    pcall(mp.add_buff, mp, 200035) -- Continuous HP regeneration
+    pcall(mp.add_buff, mp, 200036) -- Continuous HP regeneration
+    pcall(mp.add_buff, mp, 200102) -- Healing / recovery
+ 
+ 
+    -- Utility Buffs
+    pcall(mp.add_buff, mp, 30407)  -- untargettable
+    pcall(mp.add_buff, mp, 70108)  -- remove silence status
+    pcall(mp.add_buff, mp, 70116)  -- immune to silence and stun VIP
+    pcall(mp.add_buff, mp, 70122)  -- immune to slow VIP
+    pcall(mp.add_buff, mp, 200005) -- +10% movement speed
+    pcall(mp.add_buff, mp, 200006) -- -10% chance to not receive status ailments
+    pcall(mp.add_buff, mp, 102381) -- fall damage immunity
+ 
+ 
+    -- Recovery Buffs
+    pcall(mp.add_buff, mp, 70141)  -- recover buff
+    pcall(mp.add_buff, mp, 70063)  -- stamina/full recovery
+ 
+    -- Food Buffs
+    pcall(mp.add_buff, mp, 109550) -- Spicy Bun: lose Qi over time; +20% damage; hitting restores 3 Qi
+    pcall(mp.add_buff, mp, 109551) -- Meat Bun: +15% skill damage when HP>90%; +7.5% HP drain when HP<50%
+    pcall(mp.add_buff, mp, 109552) -- Coriander Bun: +5% skill damage; +5% move speed; -10% physical defense
+    pcall(mp.add_buff, mp, 109553) -- Mint Bun: Active skill cooldown -20%; Endurance Recovery +30%
+    pcall(mp.add_buff, mp, 109554) -- Big Bun: +10% DMG Reduction when HP shield present; convert remaining shield to HP on expire
+    pcall(mp.add_buff, mp, 109555) -- Wasabi Bun: Enrage on damage: +15% damage; +5% affinity; -20% physical defense
+    pcall(mp.add_buff, mp, 109556) -- Mega Bun: +15% Max HP; +20% Max Endurance; -10% damage
+    pcall(mp.add_buff, mp, 109557) -- Intestine Bun: +25% healing and healing received; doubled when HP<30%
+    pcall(mp.add_buff, mp, 109558) -- Donkey Bun: Healing restores extra 2% of target's Max HP and Qi
+    pcall(mp.add_buff, mp, 109559) -- Energy Bun: Reduces damage >30% Max HP by 50%; increases damage taken next 5s by 20%; 5min CD
+    pcall(mp.add_buff, mp, 109560) -- Wasabi Overload: +15% damage; +5% affinity; -20% physical defense
+ 
+	
+	-- Loot Buffs
+	-- pcall(mp.add_buff, mp, 104013) -- Harvesting: Increases Herb Gathering Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104014) -- Mining: Increases Mining Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104015) -- Logging: Increases Woodcutting Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104016) -- Angling: Increases Fishing Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104017) -- Hunting: Increases Hunting Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104018) -- Forge 1: Increases Forging 1 Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104019) -- Forge 2: Increases Forging 2 Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104020) -- Forge 3: Increases Forging 3 Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104021) -- Forge 4: Increases Forging 4 Critical Rate by 1% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104022) -- Harvesting: Herbal Gathering Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104023) -- Harvesting: Herbal Gathering Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104024) -- Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104025) -- Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104026) -- Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104027) -- Harvesting: Herbal Gathering Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104028) -- Mining: Mining Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104029) -- Mining: Mining Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104030) -- Mining: Mining Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104031) -- Mining: Mining Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104032) -- Mining: Mining Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104033) -- Mining: Mining Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104034) -- Logging: Increases Woodcutting Critical Rate by 7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104035) -- Logging: Increases Woodcutting Critical Rate by 7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104036) -- Logging: Logging Critical Rate +20% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104037) -- Logging: Logging Critical Rate +20% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104038) -- Logging: Logging Critical Rate +20% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104039) -- Logging: Logging Critical Rate +20% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104040) -- Angling: Fishing Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104041) -- Angling: Fishing Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104042) -- Angling: Fishing Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104043) -- Angling: Fishing Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104044) -- Angling: Fishing Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104045) -- Angling: Fishing Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104046) -- Hunting: Hunting Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104047) -- Hunting: Hunting Critical Rate +7.5% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104048) -- Hunting: Hunting Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104049) -- Hunting: Hunting Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104050) -- Hunting: Hunting Critical Rate +10% (Series does not stack)
+    -- pcall(mp.add_buff, mp, 104051) -- Hunting: Hunting Critical Rate +10% (Series does not stack)
+	
+	-- Misc / Unknown
+    pcall(mp.add_buff, mp, 30328)  -- idk yet
+ 
+ 
+ 
+    -- Boss Transformations 
+    -- pcall(mp.add_buff, mp, 30335)  -- Illuminate
+    -- pcall(mp.add_buff, mp, 30385)  -- Yi Dao (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30386)  -- Tian Ying (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30387)  -- Sleeping Daoist (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30388)  -- Wooden Eagle (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30389)  -- Zheng E (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30390)  -- Earth Fiend Deity (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30391)  -- Dragon King (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30392)  -- The Void King (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30393)  -- Lucky Seventeen (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30394)  -- Snake Doctor (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30395)  -- River Master (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30396)  -- Lucky Seventeen Phase 2 (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30397)  -- Dao Lord (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30398)  -- Puppeteer (Boss Transformation)
+    -- pcall(mp.add_buff, mp, 30399)  -- Puppeteer? (extra check)
+ 
+    -- Buggy (keep commented unless you know what you're doing)
+    -- pcall(mp.add_buff, mp, 70138) -- resurrect lv3, increase 4 VIP (buggy)
+    -- pcall(mp.add_buff, mp, 30346) -- Great Evasion: Ranged attack deflection (Note: Buggy - character sits in place)
+    -- pcall(mp.add_buff, mp, 70021) -- [WARNING] Throws you across the map (Avoid using)
+    -- pcall(mp.add_buff, mp, 70132) -- Resurrect lv1
+    -- pcall(mp.add_buff, mp, 70182) -- Ice Shield VIP
+    -- pcall(mp.add_buff, mp, 70183) -- Fire Shield VIP
+    -- pcall(mp.add_buff, mp, 70186) -- Power of fire
+    -- pcall(mp.add_buff, mp, 70187) -- Power of ice flower
+    -- pcall(mp.add_buff, mp, 200095) -- +20% HP-based damage
+ 
+    -- Redundant (theres already 1 buff that can do the same or both)
+    -- pcall(mp.add_buff, mp, 70025) -- Immune to Parry
+    -- pcall(mp.add_buff, mp, 70110) -- Immune to silence
+ 
+    -------------------------------------------------------------------------
+    -- New / Needs testing
+    -------------------------------------------------------------------------
+    -- pcall(mp.add_buff, mp, 106006) -- Imprisoned
+    -- pcall(mp.add_buff, mp, 107102) -- Agile step effect
+    -- pcall(mp.add_buff, mp, 109623) -- Adds Glow effect  
+     
+    
+ 
+    -------------------------------------------------------------------------
+    -- Can Kill you (extremely dangerous)
+    -------------------------------------------------------------------------
+    -- pcall(mp.add_buff, mp, 30355)  -- [WARNING] KILLS YOU (duplicate check)
+    -- pcall(mp.add_buff, mp, 109620) -- [WARNING] KILLS YOU (duplicate check)
+	-- pcall(mp.add_buff, mp, 109624) -- [WARNING] KILLS YOU
+ 
+end
