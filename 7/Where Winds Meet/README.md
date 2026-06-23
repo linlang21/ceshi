@@ -1,5 +1,7 @@
 # WhereWindsMeet-Lua-Frida-Injector
 
+> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md](../../项目文档.md)。
+
 **Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:
 
 - a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)

@@ -1,33 +1,165 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Windows.Forms;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace FridaGMTool
 {
+    class ThinScrollPanel : Panel
+    {
+        [DllImport("user32.dll")] static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+        [DllImport("user32.dll")] static extern bool GetScrollInfo(IntPtr hWnd, int nBar, ref SCROLLINFO lpsi);
+        [DllImport("user32.dll")] static extern int SetScrollPos(IntPtr hWnd, int nBar, int nPos, bool bRedraw);
+
+        const int SB_VERT = 1;
+        const int SIF_RANGE = 1;
+        const int SIF_PAGE = 2;
+        const int SIF_POS = 4;
+        const int WM_MOUSEWHEEL = 0x020A;
+        const int WM_VSCROLL = 0x0115;
+        const int SB_LINEUP = 0;
+        const int SB_LINEDOWN = 1;
+        const int SB_PAGEUP = 2;
+        const int SB_PAGEDOWN = 3;
+        const int SB_THUMBTRACK = 5;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SCROLLINFO
+        {
+            public int cbSize; public uint fMask; public int nMin; public int nMax;
+            public uint nPage; public int nPos; public int nTrackPos;
+        }
+
+        int thumbTop = 0, thumbH = 0;
+        bool dragging = false;
+        int dragStartY, dragStartPos;
+
+        public ThinScrollPanel()
+        {
+            AutoScroll = true;
+            DoubleBuffered = true;
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ShowScrollBar(Handle, SB_VERT, false);
+        }
+
+        protected override void OnScroll(ScrollEventArgs se)
+        {
+            base.OnScroll(se);
+            ShowScrollBar(Handle, SB_VERT, false);
+            Invalidate();
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            ShowScrollBar(Handle, SB_VERT, false);
+        }
+
+        void UpdateThumb()
+        {
+            var si = new SCROLLINFO { cbSize = Marshal.SizeOf(typeof(SCROLLINFO)), fMask = SIF_RANGE | SIF_PAGE | SIF_POS };
+            GetScrollInfo(Handle, SB_VERT, ref si);
+            int range = si.nMax - si.nMin + 1;
+            if (range <= 0 || si.nPage <= 0) { thumbTop = 0; thumbH = 0; return; }
+            int trackH = Height - 4;
+            thumbH = Math.Max(18, (int)((float)si.nPage / range * trackH));
+            thumbTop = 2 + (int)((float)(si.nPos - si.nMin) / (range - si.nPage) * (trackH - thumbH));
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            UpdateThumb();
+            if (thumbH <= 0) return;
+            using (var b = new SolidBrush(Color.FromArgb(180, 180, 180)))
+                e.Graphics.FillRectangle(b, Width - 5, thumbTop, 3, thumbH);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!dragging) return;
+            int dy = e.Y - dragStartY;
+            var si = new SCROLLINFO { cbSize = Marshal.SizeOf(typeof(SCROLLINFO)), fMask = SIF_RANGE | SIF_PAGE | SIF_POS };
+            GetScrollInfo(Handle, SB_VERT, ref si);
+            int trackH = Height - 4;
+            int range = si.nMax - si.nMin - (int)si.nPage + 1;
+            if (range <= 0) return;
+            int newPos = dragStartPos + (int)((float)dy / (trackH) * range);
+            newPos = Math.Max(si.nMin, Math.Min(si.nMax - (int)si.nPage + 1, newPos));
+            AutoScrollPosition = new Point(0, newPos);
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.X >= Width - 6 && thumbH > 0)
+            {
+                dragging = true;
+                dragStartY = e.Y;
+                var si = new SCROLLINFO { cbSize = Marshal.SizeOf(typeof(SCROLLINFO)), fMask = SIF_POS };
+                GetScrollInfo(Handle, SB_VERT, ref si);
+                dragStartPos = si.nPos;
+            }
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            dragging = false;
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (m.Msg == WM_VSCROLL || m.Msg == WM_MOUSEWHEEL)
+            {
+                ShowScrollBar(Handle, SB_VERT, false);
+                Invalidate();
+            }
+        }
+    }
+
     class GMForm : Form
     {
         // Paths
-        static string WorkDir = @"E:\ceshi\7\banyi";
         static string ToolDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        static string OriginalDir = @"E:\ceshi\7";
-        static string OriginalInjector = Path.Combine(OriginalDir, "右键管理员运行.exe");
-        static string OriginalFridaGadget = Path.Combine(OriginalDir, "frida-gadget.dll");
-        static string OriginalDinput8 = Path.Combine(OriginalDir, "dinput8.dll");
-        static string PortableToolFallbackDir = @"E:\ceshi\7\新建文件夹";
-        static string PortableInjectorName = "Extreme Injector v3.exe";
+        static string WorkDir = ToolDir;
         static string PayloadJs = Path.Combine(WorkDir, "gm_payload.js");
-        static string TestLuaMenuScript = @"E:\ceshi\7\Test.lua-main\test.lua";
+        static string TestLuaMenuScript = ResolveTestLuaScript();
+
+        static string ResolveTestLuaScript()
+        {
+            string[] candidates = new string[] {
+                Path.Combine(ToolDir, "test.lua"),
+                Path.Combine(ToolDir, "Test.lua-main", "test.lua"),
+                Path.Combine(ToolDir, "..", "Test.lua-main", "test.lua"),
+            };
+            foreach (var p in candidates)
+            {
+                try { if (File.Exists(p)) return Path.GetFullPath(p); } catch { }
+            }
+            return Path.Combine(ToolDir, "test.lua");
+        }
         static string ConfigFile = Path.Combine(ToolDir, "config.txt");
         static string BuffConfigFile = Path.Combine(ToolDir, "buff_config.txt");
-        static readonly int[] OutfitIds = new int[] { 1570003, 400148, 1470000, 30335, 310218, 310219, 310221, 30524, 310224, 30384, 30385, 30386, 30387, 30388, 30389, 30390, 30391, 30392, 30393, 30394, 30395, 30396, 30397, 30398, 50103, 50104, 80000, 109623, 1007004, 1030000, 1230011, 1230012, 1240000, 1240001, 1240002, 1240003, 1240004, 1460000, 1460001, 1460002, 1460003, 1460004, 1460005, 1460006, 1460007, 1460008, 1460009, 1460010, 1460021, 1460024, 1460025, 1460026, 1460027, 1460028, 1460043, 1460043, 1460045, 1460046, 1460047, 1700000, 1760001, 1330001, 1450010, 1450011, 1420001, 1310000, 1250016, 1250002, 1010007, 1100000, 1170007, 1471009, 1740002, 1475007, 1820000, 1920001, 1660020, 1660021, 1500120, 1400000, 1400004, 1100000, 1770000, 1500170, 1540010, 50014, 1290000, 1290001, 1410050, 1410051, 1360005, 1560000, 1750000, 1050001, 1050013, 1040006, 1040008, 1020013, 1020014, 1020015, 1020017, 1020018, 1010000, 1070032, 1070052, 1080003, 1080015, 1080021, 1080054, 1080067, 1080073, 1080074, 910324, 910325, 910328, 910329, 910330, 910332, 910446, 960001, 440020, 440093, 450009, 310211 };
+        static readonly int[] OutfitIds = new int[] { 1570003, 400148, 1470000, 30335, 310218, 310219, 310221, 30524, 310224, 30384, 30385, 30386, 30387, 30388, 30389, 30390, 30391, 30392, 30393, 30394, 30395, 30396, 30397, 30398, 50103, 50104, 80000, 109623, 1007004, 1030000, 1230011, 1230012, 1240000, 1240001, 1240002, 1240003, 1240004, 1460000, 1460001, 1460002, 1460003, 1460004, 1460005, 1460006, 1460007, 1460008, 1460009, 1460010, 1460021, 1460024, 1460025, 1460026, 1460027, 1460028, 1460043, 1460045, 1460046, 1460047, 1700000, 1760001, 1330001, 1450010, 1450011, 1420001, 1310000, 1250016, 1250002, 1010007, 1100000, 1170007, 1471009, 1740002, 1475007, 1820000, 1920001, 1660020, 1660021, 1500120, 1400000, 1400004, 1770000, 1500170, 1540010, 50014, 1290000, 1290001, 1410050, 1410051, 1360005, 1560000, 1750000, 1050001, 1050013, 1040006, 1040008, 1020013, 1020014, 1020015, 1020017, 1020018, 1010000, 1070032, 1070052, 1080003, 1080015, 1080021, 1080054, 1080067, 1080073, 1080074, 910324, 910325, 910328, 910329, 910330, 910332, 910446, 960001, 440020, 440093, 450009, 310211 };
         static readonly string[] OutfitNames = new string[] {
-            "变成猪头", "瞬间秒杀一切", "江叔", "发光特效", "变小", "变小近距", "变小可操作", "变大", "滑冰", "穿心者", "一刀", "天鹰", "沉睡道士", "木鹰", "郑厄", "地煞", "龙王", "虚王", "十七", "蛇医", "河主", "十七 (P2)", "道君", "傀儡师", "讲经人 (男)", "讲经人 (女)", "安西军", "全身发光", "刺客", "漂流者套装", "少冬瓜", "变身 L", "发疯 - 狗", "发疯 - 驴", "发疯 - 鹿", "发疯 - 熊", "发疯 - 鸟", "人间仙", "无相", "花瓣挽歌", "春回大地", "红幕", "平静生活", "换装 6", "换装 7", "沧海威严", "九尾传承", "雅乐风华", "笔", "大鹅", "公鸡", "土拨鼠", "驴道人的驴", "冲天炮", "陨石", "咸鱼", "独眼老鼠", "爆炸桶", "踢鞠小人", "浴衣", "大宋提刑官", "少年猪脚", "高冬瓜人", "矮冬瓜人", "绿衣公公", "衣服女", "火眼金睛-特效", "移动麻布袋", "战斗麻布袋", "美女", "白衣小哥", "兵", "老虎", "苹果精", "玫瑰花快速", "赵二", "超级战斗鸡", "超级战斗鹅", "巨子青", "无头鬼新娘", "有头鬼新娘", "女npc", "小蓝猫", "大猫猫", "大鹅", "机械蚂蚁", "好看女npc", "好看女npc2", "可以取消的狼王", "可以取消的鹰", "韩通", "韩守谅", "mini苹果", "马儿", "台柱子", "红色短裤", "黄色短裤", "白发", "面具", "白发面具", "盾牌", "方天画戟", "鹿角", "超好看特效", "超好看特效2", "武器带水特效", "角面具", "萤火虫特效", "红叶特效", "欲火焚身特效", "白鹤特效", "水汽特效", "地狱火特效", "地狱火白特效", "地狱武器附火", "头顶花瓣", "第一人称", "花瓣墙特效", "光圈特效", "帽子小哥", "闪电特效", "闪电特效2", "脚底白云特效", "不良人"
+            "变成猪头", "瞬间秒杀一切", "江叔", "发光特效", "变小", "变小近距", "变小可操作", "变大", "滑冰", "穿心者", "一刀", "天鹰", "沉睡道士", "木鹰", "郑厄", "地煞", "龙王", "虚王", "十七", "蛇医", "河主", "十七 (P2)", "道君", "傀儡师", "讲经人 (男)", "讲经人 (女)", "安西军", "全身发光", "刺客", "漂流者套装", "少冬瓜", "变身 L", "发疯 - 狗", "发疯 - 驴", "发疯 - 鹿", "发疯 - 熊", "发疯 - 鸟", "人间仙", "无相", "花瓣挽歌", "春回大地", "红幕", "平静生活", "换装 6", "换装 7", "沧海威严", "九尾传承", "雅乐风华", "笔", "大鹅", "公鸡", "土拨鼠", "驴道人的驴", "冲天炮", "陨石", "独眼老鼠", "爆炸桶", "踢鞠小人", "浴衣", "大宋提刑官", "少年猪脚", "高冬瓜人", "矮冬瓜人", "绿衣公公", "衣服女", "火眼金睛-特效", "移动麻布袋", "战斗麻布袋", "美女", "白衣小哥", "兵", "老虎", "苹果精", "玫瑰花快速", "赵二", "超级战斗鸡", "超级战斗鹅", "巨子青", "无头鬼新娘", "有头鬼新娘", "女npc", "小蓝猫", "大猫猫", "大鹅", "机械蚂蚁", "好看女npc", "好看女npc2", "可以取消的狼王", "可以取消的鹰", "韩通", "韩守谅", "mini苹果", "马儿", "台柱子", "红色短裤", "黄色短裤", "白发", "面具", "白发面具", "盾牌", "方天画戟", "鹿角", "超好看特效", "超好看特效2", "武器带水特效", "角面具", "萤火虫特效", "红叶特效", "欲火焚身特效", "白鹤特效", "水汽特效", "地狱火特效", "地狱火白特效", "地狱武器附火", "头顶花瓣", "第一人称", "花瓣墙特效", "光圈特效", "帽子小哥", "闪电特效", "闪电特效2", "脚底白云特效", "不良人"
         };
+
         const uint PROCESS_VM_READ = 0x0010;
         const uint PROCESS_VM_WRITE = 0x0020;
         const uint PROCESS_VM_OPERATION = 0x0008;
@@ -41,6 +173,28 @@ namespace FridaGMTool
         static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, IntPtr dwSize, out IntPtr lpNumberOfBytesRead);
         [DllImport("kernel32.dll")]
         static extern bool WriteProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, IntPtr dwSize, out IntPtr lpNumberOfBytesWritten);
+        // 内嵌注入所需API
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+        static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
+        [DllImport("kernel32.dll")]
+        static extern bool VirtualFreeEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint dwFreeType);
+        [DllImport("kernel32.dll")]
+        static extern IntPtr CreateRemoteThread(IntPtr hProcess, IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);
+        [DllImport("kernel32.dll")]
+        static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi)]
+        static extern IntPtr GetModuleHandle(string lpModuleName);
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+        static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+        [DllImport("kernel32.dll")]
+        static extern bool GetExitCodeThread(IntPtr hThread, out uint lpExitCode);
+        [DllImport("ntdll.dll")]
+        static extern int NtQueryInformationProcess(IntPtr processHandle, int processInformationClass, byte[] processInformation, int processInformationLength, out int returnLength);
+        const uint MEM_COMMIT = 0x1000;
+        const uint MEM_RELEASE = 0x8000;
+        const uint PAGE_READWRITE = 0x04;
+        const uint PROCESS_ALL_ACCESS = 0x1F0FFF;
+        const uint INFINITE = 0xFFFFFFFF;
 
         struct MemorySpeedEntry
         {
@@ -60,26 +214,29 @@ namespace FridaGMTool
         };
 
         static string GameSubPath = @"yysls_fast\Engine\Binaries\Win64r";
+        static string GameSubPathAlt = @"yysls_medium\Engine\Binaries\Win64r";
         static string GameExeName = "yysls.exe";
 
         Label lblStatus;
-        Label lblGamePath;
         Panel grpGM;
         Panel tabGM;
+        ThinScrollPanel tabInit;
         Button btnBrowse;
-        Button btnCopyFiles, btnClearFiles, btnStartGame, btnInjectFrida;
+        Button btnStartGame, btnInject;
         Button btnRefresh;
-        Button btnGod, btnStamina, btnInvis;
-        Button btnAtkBuff, btnDefBuff;
-        Button btnCancelInvis;
-        Button btnYyAutoLoot, btnYyNpcDumb, btnYyRecover, btnYySuperDodge, btnYyAutoBuff, btnYyLoadScript, btnCnMenuLoad;
+        Button btnStamina;
+        Button btnAtkBuff, btnDefBuff, btnMinBuff, btnStealthFlags;
+        Button btnYyAutoLoot, btnYyRecover, btnYyLoadScript, btnCnMenuLoad;
         Button btnLoopBuff, btnLoopLoot, btnLoopRecover, btnLoopDefense;
         Button btnGatherBuff, btnAuxBuff, btnUnknownBuff;
-        Button btnCombatSkill, btnScrollBuff, btnAttrBuff;
-        Button btnAutoChest, btnRhythmGame, btnChessWin, btnGmTrainPanel, btnTestLuaMenu, btnApplyOutfit, btnOpenOutfitPicker;
-        Button btnStaminaDive, btnStaminaEmpty, btnStaminaResetAll, btnDisableLogs, btnAutoLootPlus, btnPitchPot, btnApplyAtkMul, btnResetAtkMul, btnApplyDialogSpeed, btnResetDialogSpeed;
-        ComboBox cmbAtkMul, cmbDialogSpeed, cmbOutfit;
+        Button btnRhythmGame, btnChessWin, btnGmTrainPanel, btnTestLuaMenu;
+        CheckBox chkGod, chkInvis, chkNpcDumb, chkSuperDodge, chkOneHit;
+        bool suppressCheckboxEvents = true;
+        Button btnStaminaDive, btnStaminaEmpty, btnStaminaResetAll, btnPitchPot, btnApplyAtkMul, btnResetAtkMul, btnApplyDialogSpeed, btnResetDialogSpeed, btnCutsceneKill, btnApplyAtkSpeed, btnResetAtkSpeed;
+        ComboBox cmbAtkMul, cmbAtkSpeed;
+        TextBox txtDialogSpeed;
         TextBox txtLog = null;
+        TextBox txtCoordInput;
 
         string gameRootPath = "";
         string gameBinPath = "";
@@ -88,281 +245,276 @@ namespace FridaGMTool
         bool commandPending = false;
 
         string CmdFile = "";
-        string FridaLogFile = "";
-        string HackLogFile = "";
+        string GadgetLogFile = "";
+        string AuxLogFile = "";
         string CmdResultFile = "";
         string ToolResultFile = Path.Combine(ToolDir, "gm_tool_result.txt");
         string ToolResultCompatFile = Path.Combine(WorkDir, "gm_tool_result.txt");
         string UnifiedLogFile = Path.Combine(ToolDir, "gm_tool.log");
 
+        // 共享内存通信
+        string MMF_NAME = "Global\\WinSvcSharedMem"; // 运行时随机化
+        const int MMF_SIZE = 262144; // 256KB
+        const int MMF_RESULT_OFFSET = 131072; // 128KB
+        const int MMF_HALF_SIZE = 131072;
+        MemoryMappedFile mmf = null;
+        MemoryMappedViewAccessor mmfAccessor = null;
+        int mmfSeq = 0;
+        int mmfResultSeq = 0;
+
+        // 随机化通信文件名 (使用单例 Random 避免同一时钟刻度产生相同种子)
+        static readonly Random _sharedRandom = new Random();
+        static readonly object _randLock = new object();
+        string RandomHex8() { lock (_randLock) { return _sharedRandom.Next(0x10000000, int.MaxValue).ToString("x8"); } }
+        string RandFileName(string ext) { return "svc_" + RandomHex8() + ext; }
+        string RandMmfName() { return "Global\\" + RandomHex8() + RandomHex8(); }
+
+        // Lua 字符串转义：转义反斜杠、引号、换行、回车以及右方括号防止 [[..]] 逃逸
+        static string EscapeLuaString(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            var sb = new StringBuilder(s.Length + 8);
+            foreach (var c in s)
+            {
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\'': sb.Append("\\'"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\0': sb.Append("\\0"); break;
+                    case ']': sb.Append("\\]"); break;
+                    default: sb.Append(c); break;
+                }
+            }
+            return sb.ToString();
+        }
+
+        // 生成并保存随机化配置
+        void GenerateRandomCommConfig()
+        {
+            string cfgPath = Path.Combine(ToolDir, "svc.cfg");
+            string mmfName = RandMmfName();
+            string cmdName = RandFileName(".dat");
+            string resultName = RandFileName(".dat");
+            string logName = RandFileName(".log");
+            string cfg = mmfName + "\n" + cmdName + "\n" + resultName + "\n" + logName;
+            File.WriteAllText(cfgPath, cfg, new UTF8Encoding(false));
+            MMF_NAME = mmfName;
+            CmdFile = Path.Combine(ToolDir, cmdName);
+            CmdResultFile = Path.Combine(ToolDir, resultName);
+            UnifiedLogFile = Path.Combine(ToolDir, logName);
+            GadgetLogFile = UnifiedLogFile;
+            AuxLogFile = UnifiedLogFile;
+            ToolResultFile = Path.Combine(ToolDir, resultName);
+            ToolResultCompatFile = Path.Combine(ToolDir, resultName);
+        }
+
         public GMForm()
         {
-            Text = "燕云十六声 辅助工具 v13.0";
-            Size = new Size(600, 540);
+            EnsurePayloadToolDir(ToolDir);
+            Text = "系统服务管理器";
+            Size = new Size(530, 380);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
 
-            int y = 10;
-
-            // === 操作区 ===
-            var grpAction = new Panel { Location = new Point(10, y), Size = new Size(560, 105), BackColor = Color.White };
-            btnBrowse = new Button { Text = "选择目录", Location = new Point(10, 10), Size = new Size(105, 30), BackColor = Color.White };
-            btnBrowse.Click += BtnBrowse_Click;
-            grpAction.Controls.Add(btnBrowse);
-            btnCopyFiles = new Button { Text = "复制文件", Location = new Point(120, 10), Size = new Size(105, 30), BackColor = Color.LightGreen };
-            btnCopyFiles.Click += BtnCopyFiles_Click_B;
-            grpAction.Controls.Add(btnCopyFiles);
-            btnClearFiles = new Button { Text = "清理文件", Location = new Point(230, 10), Size = new Size(105, 30), BackColor = Color.White };
-            btnClearFiles.Click += BtnClearFiles_Click_B;
-            grpAction.Controls.Add(btnClearFiles);
-            lblGamePath = new Label { Text = "未选择目录", Location = new Point(345, 16), Size = new Size(200, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 8) };
-            grpAction.Controls.Add(lblGamePath);
-
-            btnStartGame = new Button { Text = "1.启动游戏", Location = new Point(10, 48), Size = new Size(105, 30), BackColor = Color.LightYellow };
-            btnStartGame.Click += BtnStartGame_Click;
-            grpAction.Controls.Add(btnStartGame);
-            btnInjectFrida = new Button { Text = "2.注入Frida", Location = new Point(120, 48), Size = new Size(105, 30), BackColor = Color.LightPink };
-            btnInjectFrida.Click += BtnInjectFrida_Click_B;
-            grpAction.Controls.Add(btnInjectFrida);
-
-            var lblHint = new Label { Text = "方案B: 复制文件 → 启动游戏 → 注入Frida", Location = new Point(230, 54), Size = new Size(310, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei", 8) };
-            grpAction.Controls.Add(lblHint);
-            btnRefresh = new Button { Text = "刷新状态", Location = new Point(10, 80), Size = new Size(105, 22) };
-            btnRefresh.Click += (s, e) => CheckState();
-            grpAction.Controls.Add(btnRefresh);
-            var btnQuickOpenLog = new Button { Text = "打开日志", Location = new Point(120, 80), Size = new Size(105, 22) };
-            btnQuickOpenLog.Click += (s, e) => {
-                string logToOpen = BuildUnifiedLogSnapshot();
-                if (!string.IsNullOrEmpty(logToOpen) && File.Exists(logToOpen)) Process.Start("notepad.exe", logToOpen);
-                else MessageBox.Show("日志文件不存在");
-            };
-            grpAction.Controls.Add(btnQuickOpenLog);
-            var btnQuickOpenLogDir = new Button { Text = "打开目录", Location = new Point(230, 80), Size = new Size(105, 22) };
-            btnQuickOpenLogDir.Click += (s, e) => { if (Directory.Exists(ToolDir)) Process.Start("explorer.exe", ToolDir); };
-            grpAction.Controls.Add(btnQuickOpenLogDir);
-            var btnQuickClearLog = new Button { Text = "清除日志", Location = new Point(340, 80), Size = new Size(105, 22) };
-            btnQuickClearLog.Click += (s, e) => {
-                ClearManagedFiles();
-                isReady = false;
-                UpdateStatus();
-            };
-            grpAction.Controls.Add(btnQuickClearLog);
-            Controls.Add(grpAction);
-            y += 115;
-
-            // === 状态 ===
-            lblStatus = new Label { Text = "状态: 请先选择游戏目录", Location = new Point(10, y), Size = new Size(560, 22), ForeColor = Color.Blue, Font = new Font("Microsoft YaHei", 9, FontStyle.Bold) };
-            Controls.Add(lblStatus);
-            y += 30;
+            int y = 4;
 
             // === GM 命令 ===
-            grpGM = new Panel { Location = new Point(10, y), Size = new Size(560, 288), BackColor = Color.White };
+            grpGM = new Panel { Location = new Point(4, y), Size = new Size(508, 340), BackColor = Color.White };
             int gy = 12;
-            const int rowStep = 32;
-            const int sectionGap = 8;
+            const int rowStep = 28;
+            const int sectionGap = 4;
             Action<string> addSection = (title) => {
                 if (grpGM.Controls.Count > 0) gy += rowStep + sectionGap;
-                var lbl = new Label { Text = "── " + title + " ──", Location = new Point(10, gy), Size = new Size(540, 18), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 8, FontStyle.Bold) };
+                var lbl = new Label { Text = "── " + title + " ──", Location = new Point(10, gy), Size = new Size(470, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) };
                 grpGM.Controls.Add(lbl);
-                gy += 21;
+                gy += 16;
             };
 
-            addSection("战斗增强");
-            btnGod = new Button { Text = "无敌", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnGod.Click += (s, e) => SendExperimentCommand("无敌", BuildCombatExperimentLua("god"));
-            grpGM.Controls.Add(btnGod);
-            btnStamina = new Button { Text = "锁体力消耗", Location = new Point(140, gy), Size = new Size(125, 30) };
+            if (grpGM.Controls.Count > 0) gy += rowStep + sectionGap;
+            chkGod = new CheckBox { Text = "无敌", Location = new Point(10, gy), Size = new Size(110, 26) };
+            chkGod.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkGod.Text, BuildCombatExperimentLua(chkGod.Checked ? "god" : "god_off")); };
+            grpGM.Controls.Add(chkGod);
+            btnStamina = new Button { Text = "锁体力消耗", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnStamina.Click += (s, e) => SendExperimentCommand("锁体力消耗", BuildCombatExperimentLua("stamina_lock"));
             grpGM.Controls.Add(btnStamina);
-            btnStaminaDive = new Button { Text = "无限潜水资源", Location = new Point(270, gy), Size = new Size(125, 30) };
+            btnStaminaDive = new Button { Text = "无限潜水资源", Location = new Point(270, gy), Size = new Size(110, 26) };
             btnStaminaDive.Click += (s, e) => SendExperimentCommand("无限潜水资源", BuildCombatExperimentLua("stamina_dive"));
             grpGM.Controls.Add(btnStaminaDive);
-            btnInvis = new Button { Text = "隐身", Location = new Point(400, gy), Size = new Size(125, 30) };
-            btnInvis.Click += (s, e) => SendExperimentCommand("隐身", BuildCombatExperimentLua("invis"));
-            grpGM.Controls.Add(btnInvis);
+            chkInvis = new CheckBox { Text = "隐身", Location = new Point(400, gy), Size = new Size(110, 26) };
+            chkInvis.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkInvis.Text, BuildCombatExperimentLua(chkInvis.Checked ? "invis" : "invis_off")); };
+            grpGM.Controls.Add(chkInvis);
 
             gy += rowStep;
-            btnCancelInvis = new Button { Text = "取消隐身", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnCancelInvis.Click += (s, e) => SendExperimentCommand("取消隐身", BuildCombatExperimentLua("invis_off"));
-            grpGM.Controls.Add(btnCancelInvis);
-            btnStaminaEmpty = new Button { Text = "清空战斗资源", Location = new Point(140, gy), Size = new Size(125, 30) };
+            btnStaminaEmpty = new Button { Text = "清空战斗资源", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnStaminaEmpty.Click += (s, e) => SendExperimentCommand("清空战斗资源", BuildCombatExperimentLua("stamina_empty"));
             grpGM.Controls.Add(btnStaminaEmpty);
-            btnStaminaResetAll = new Button { Text = "恢复体力设置", Location = new Point(270, gy), Size = new Size(125, 30) };
+            btnStaminaResetAll = new Button { Text = "恢复体力设置", Location = new Point(270, gy), Size = new Size(110, 26) };
             btnStaminaResetAll.Click += (s, e) => SendExperimentCommand("恢复体力设置", BuildCombatExperimentLua("stamina_reset_all"));
             grpGM.Controls.Add(btnStaminaResetAll);
 
             gy += rowStep;
-            btnYyNpcDumb = new Button { Text = "NPC变笨", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnYyNpcDumb.Click += (s, e) => SendExperimentCommand("NPC变笨", BuildYyLaoLiuLua("yy_npcdumb"));
-            grpGM.Controls.Add(btnYyNpcDumb);
-            btnYySuperDodge = new Button { Text = "超级闪避", Location = new Point(140, gy), Size = new Size(125, 30) };
-            btnYySuperDodge.Click += (s, e) => SendExperimentCommand("超级闪避", BuildYyLaoLiuLua("yy_superdodge"));
-            grpGM.Controls.Add(btnYySuperDodge);
+            chkNpcDumb = new CheckBox { Text = "NPC变笨", Location = new Point(10, gy), Size = new Size(110, 26) };
+            chkNpcDumb.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkNpcDumb.Text, BuildYyLaoLiuLua(chkNpcDumb.Checked ? "yy_npcdumb" : "yy_npcdumb_off")); };
+            grpGM.Controls.Add(chkNpcDumb);
+            chkSuperDodge = new CheckBox { Text = "超级闪避", Location = new Point(140, gy), Size = new Size(110, 26) };
+            chkSuperDodge.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkSuperDodge.Text, BuildCombatExperimentLua(chkSuperDodge.Checked ? "super_dodge" : "super_dodge_off")); };
+            grpGM.Controls.Add(chkSuperDodge);
 
-            addSection("Buff 施加 (一次性)");
-            btnAtkBuff = new Button { Text = "攻击Buff", Location = new Point(10, gy), Size = new Size(125, 30) };
+            if (grpGM.Controls.Count > 0) gy += rowStep + sectionGap;
+            btnAtkBuff = new Button { Text = "攻击Buff", Location = new Point(10, gy), Size = new Size(110, 26) };
             btnAtkBuff.Click += (s, e) => SendExperimentCommand("攻击Buff整合", BuildCombatExperimentLua("atkbuff_combo"));
             grpGM.Controls.Add(btnAtkBuff);
-            btnDefBuff = new Button { Text = "防御Buff", Location = new Point(140, gy), Size = new Size(125, 30) };
+            btnDefBuff = new Button { Text = "防御Buff", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnDefBuff.Click += (s, e) => SendExperimentCommand("防御Buff", BuildCombatExperimentLua("defbuff"));
             grpGM.Controls.Add(btnDefBuff);
+            btnMinBuff = new Button { Text = "最小Buff", Location = new Point(270, gy), Size = new Size(110, 26), BackColor = Color.LightGreen };
+            btnMinBuff.Click += (s, e) => SendExperimentCommand("最小Buff", BuildLoopFeatureLua("minimal_buff"));
+            grpGM.Controls.Add(btnMinBuff);
 
             gy += rowStep;
-            btnGatherBuff = new Button { Text = "采集Buff", Location = new Point(10, gy), Size = new Size(125, 30) };
+            btnGatherBuff = new Button { Text = "采集Buff", Location = new Point(10, gy), Size = new Size(110, 26) };
             btnGatherBuff.Click += (s, e) => SendExperimentCommand("采集Buff", BuildLoopFeatureLua("gather_buff"));
             grpGM.Controls.Add(btnGatherBuff);
-            btnYyAutoBuff = new Button { Text = "自动Buff", Location = new Point(140, gy), Size = new Size(125, 30) };
-            btnYyAutoBuff.Click += (s, e) => SendExperimentCommand("自动Buff", BuildLoopFeatureLua("auto_buff"));
-            grpGM.Controls.Add(btnYyAutoBuff);
 
             gy += rowStep;
-            btnCombatSkill = new Button { Text = "战斗技巧", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnCombatSkill.Click += (s, e) => SendExperimentCommand("战斗技巧Buff", BuildLoopFeatureLua("combat_skill"));
-            grpGM.Controls.Add(btnCombatSkill);
-            btnScrollBuff = new Button { Text = "卷轴心法", Location = new Point(140, gy), Size = new Size(125, 30) };
-            btnScrollBuff.Click += (s, e) => SendExperimentCommand("卷轴心法", BuildLoopFeatureLua("scroll_buff"));
-            grpGM.Controls.Add(btnScrollBuff);
-
-            gy += rowStep;
-            btnAttrBuff = new Button { Text = "属性Buff", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnAttrBuff.Click += (s, e) => SendExperimentCommand("属性Buff", BuildLoopFeatureLua("attr_buff"));
-            grpGM.Controls.Add(btnAttrBuff);
-            btnAuxBuff = new Button { Text = "辅助Buff", Location = new Point(140, gy), Size = new Size(125, 30) };
+            btnAuxBuff = new Button { Text = "辅助Buff", Location = new Point(10, gy), Size = new Size(110, 26) };
             btnAuxBuff.Click += (s, e) => SendExperimentCommand("辅助Buff", BuildLoopFeatureLua("aux_buff"));
             grpGM.Controls.Add(btnAuxBuff);
-
-            gy += rowStep;
-            btnUnknownBuff = new Button { Text = "未知Buff", Location = new Point(10, gy), Size = new Size(125, 30) };
+            btnUnknownBuff = new Button { Text = "未知Buff", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnUnknownBuff.Click += (s, e) => SendExperimentCommand("未知Buff", BuildLoopFeatureLua("unknown_buff"));
             grpGM.Controls.Add(btnUnknownBuff);
-            var btnRemoveAllBuffs = new Button { Text = "移除全部Buff", Location = new Point(140, gy), Size = new Size(125, 30) };
+            var btnRemoveAllBuffs = new Button { Text = "移除全部Buff", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnRemoveAllBuffs.Click += (s, e) => SendExperimentCommand("移除全部Buff", BuildLoopFeatureLua("remove_all_buffs"));
             grpGM.Controls.Add(btnRemoveAllBuffs);
-            btnDisableLogs = new Button { Text = "禁用日志/检测", Location = new Point(270, gy), Size = new Size(125, 30) };
-            btnDisableLogs.Click += (s, e) => SendExperimentCommand("禁用日志/检测", BuildYyLaoLiuLua("yy_disablelogs"));
-            grpGM.Controls.Add(btnDisableLogs);
-            var btnYyRemoveBuff = new Button { Text = "老六移除Buff", Location = new Point(400, gy), Size = new Size(125, 30) };
+            btnStealthFlags = new Button { Text = "关闭安全标志", Location = new Point(270, gy), Size = new Size(110, 26) };
+            btnStealthFlags.Click += (s, e) => SendExperimentCommand("关闭安全标志", BuildLoopFeatureLua("stealth_flags"));
+            grpGM.Controls.Add(btnStealthFlags);
+            var btnYyRemoveBuff = new Button { Text = "老六移除Buff", Location = new Point(400, gy), Size = new Size(110, 26) };
             btnYyRemoveBuff.Click += (s, e) => SendExperimentCommand("老六移除Buff", BuildYyLaoLiuBuffToolLua("yy_remove_buffs"));
             grpGM.Controls.Add(btnYyRemoveBuff);
 
-            addSection("循环功能 (再点停止)");
-            btnLoopBuff = new Button { Text = "循环强力Buff", Location = new Point(10, gy), Size = new Size(125, 30) };
+            if (grpGM.Controls.Count > 0) gy += rowStep + sectionGap;
+            btnLoopBuff = new Button { Text = "循环强力Buff", Location = new Point(10, gy), Size = new Size(110, 26) };
             btnLoopBuff.Click += (s, e) => SendExperimentCommand("循环强力Buff", BuildLoopFeatureLua("loop_buff"));
             grpGM.Controls.Add(btnLoopBuff);
-            btnLoopDefense = new Button { Text = "循环防御Buff", Location = new Point(140, gy), Size = new Size(125, 30) };
+            btnLoopDefense = new Button { Text = "循环防御Buff", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnLoopDefense.Click += (s, e) => SendExperimentCommand("循环防御Buff", BuildLoopFeatureLua("loop_defense"));
             grpGM.Controls.Add(btnLoopDefense);
-            btnLoopLoot = new Button { Text = "循环自动拾取", Location = new Point(270, gy), Size = new Size(125, 30) };
+            btnLoopLoot = new Button { Text = "循环自动拾取", Location = new Point(270, gy), Size = new Size(110, 26), BackColor = Color.FromArgb(255, 200, 200) };
             btnLoopLoot.Click += (s, e) => SendExperimentCommand("循环自动拾取", BuildLoopFeatureLua("loop_loot"));
             grpGM.Controls.Add(btnLoopLoot);
-            btnLoopRecover = new Button { Text = "循环自动恢复", Location = new Point(400, gy), Size = new Size(125, 30) };
+            btnLoopRecover = new Button { Text = "循环自动恢复", Location = new Point(400, gy), Size = new Size(110, 26) };
             btnLoopRecover.Click += (s, e) => SendExperimentCommand("循环自动恢复", BuildLoopFeatureLua("loop_recover"));
             grpGM.Controls.Add(btnLoopRecover);
 
-            addSection("游戏辅助");
-            btnYyAutoLoot = new Button { Text = "自动拾取", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnYyAutoLoot.Click += (s, e) => SendExperimentCommand("自动拾取", BuildYyLaoLiuLua("yy_autoloot"));
+            if (grpGM.Controls.Count > 0) gy += rowStep + sectionGap;
+            btnYyAutoLoot = new Button { Text = "自动拾取", Location = new Point(10, gy), Size = new Size(110, 26) };
+            btnYyAutoLoot.Click += (s, e) => SendExperimentCommand("自动拾取", BuildLoopFeatureLua("loot_once"));
             grpGM.Controls.Add(btnYyAutoLoot);
-            btnAutoLootPlus = new Button { Text = "增强拾取", Location = new Point(140, gy), Size = new Size(125, 30) };
-            btnAutoLootPlus.Click += (s, e) => SendExperimentCommand("增强拾取", BuildGameFeatureLua("auto_loot_plus"));
-            grpGM.Controls.Add(btnAutoLootPlus);
-            btnAutoChest = new Button { Text = "自动开箱收集", Location = new Point(270, gy), Size = new Size(125, 30) };
-            btnAutoChest.Click += (s, e) => SendExperimentCommand("自动开箱收集", BuildGameFeatureLua("auto_chest"));
-            grpGM.Controls.Add(btnAutoChest);
-            btnYyRecover = new Button { Text = "一键恢复", Location = new Point(400, gy), Size = new Size(125, 30) };
+            btnYyRecover = new Button { Text = "一键恢复", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnYyRecover.Click += (s, e) => SendExperimentCommand("一键恢复", BuildYyLaoLiuLua("yy_recover"));
             grpGM.Controls.Add(btnYyRecover);
 
             gy += rowStep;
-            btnRhythmGame = new Button { Text = "NPC节奏游戏", Location = new Point(10, gy), Size = new Size(125, 30) };
+            btnRhythmGame = new Button { Text = "NPC节奏游戏", Location = new Point(10, gy), Size = new Size(110, 26) };
             btnRhythmGame.Click += (s, e) => SendExperimentCommand("NPC节奏游戏", BuildGameFeatureLua("rhythm_game"));
             grpGM.Controls.Add(btnRhythmGame);
-            btnChessWin = new Button { Text = "象棋秒赢", Location = new Point(140, gy), Size = new Size(125, 30) };
+            btnChessWin = new Button { Text = "象棋秒赢", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnChessWin.Click += (s, e) => SendExperimentCommand("象棋秒赢", BuildGameFeatureLua("chess_win"));
             grpGM.Controls.Add(btnChessWin);
-            btnPitchPot = new Button { Text = "投壶圈变大", Location = new Point(270, gy), Size = new Size(125, 30) };
+            btnPitchPot = new Button { Text = "投壶圈变大", Location = new Point(270, gy), Size = new Size(110, 26) };
             btnPitchPot.Click += (s, e) => SendExperimentCommand("投壶圈变大", BuildGameFeatureLua("pitch_pot_easy"));
             grpGM.Controls.Add(btnPitchPot);
 
             gy += rowStep;
-            btnGmTrainPanel = new Button { Text = "GM训练面板", Location = new Point(10, gy), Size = new Size(125, 30) };
-            btnGmTrainPanel.Click += (s, e) => SendExperimentCommand("GM训练面板", BuildGameFeatureLua("gm_train_panel"));
+            btnGmTrainPanel = new Button { Text = "训练面板", Location = new Point(10, gy), Size = new Size(110, 26) };
+            btnGmTrainPanel.Click += (s, e) => SendExperimentCommand("训练面板", BuildGameFeatureLua("gm_train_panel"));
             grpGM.Controls.Add(btnGmTrainPanel);
-            btnTestLuaMenu = new Button { Text = "打开Test菜单", Location = new Point(140, gy), Size = new Size(125, 30) };
+            btnTestLuaMenu = new Button { Text = "打开Test菜单", Location = new Point(140, gy), Size = new Size(110, 26) };
             btnTestLuaMenu.Click += (s, e) => SendExperimentCommand("打开Test菜单", BuildTestLuaMenuLua());
             grpGM.Controls.Add(btnTestLuaMenu);
-            btnYyLoadScript = new Button { Text = "加载老六脚本", Location = new Point(270, gy), Size = new Size(125, 30) };
+            btnYyLoadScript = new Button { Text = "加载老六脚本", Location = new Point(270, gy), Size = new Size(110, 26) };
             btnYyLoadScript.Click += (s, e) => SendExperimentCommand("加载老六脚本", BuildYyLaoLiuLua("yy_load_script"));
             grpGM.Controls.Add(btnYyLoadScript);
-            btnCnMenuLoad = new Button { Text = "加载国服菜单", Location = new Point(400, gy), Size = new Size(125, 30) };
+            btnCnMenuLoad = new Button { Text = "加载国服菜单", Location = new Point(400, gy), Size = new Size(110, 26) };
             btnCnMenuLoad.Click += (s, e) => SendExperimentCommand("加载国服菜单", BuildChinaMenuLua("cn_menu_load"));
             grpGM.Controls.Add(btnCnMenuLoad);
 
             gy += rowStep;
-            grpGM.Controls.Add(new Label { Text = "衣服换皮", Location = new Point(10, gy + 6), Size = new Size(80, 20) });
-            cmbOutfit = new ComboBox { Location = new Point(95, gy + 3), Size = new Size(185, 24), DropDownStyle = ComboBoxStyle.DropDownList };
-            FillOutfitCombo();
-            grpGM.Controls.Add(cmbOutfit);
-            btnApplyOutfit = new Button { Text = "应用换皮", Location = new Point(290, gy), Size = new Size(105, 30) };
-            btnApplyOutfit.Click += (s, e) => ApplyOutfitSelection();
-            grpGM.Controls.Add(btnApplyOutfit);
-            btnOpenOutfitPicker = new Button { Text = "换皮菜单", Location = new Point(405, gy), Size = new Size(105, 30) };
-            btnOpenOutfitPicker.Click += (s, e) => SendExperimentCommand("打开换皮菜单", BuildOutfitPickerLua());
-            grpGM.Controls.Add(btnOpenOutfitPicker);
+            chkOneHit = new CheckBox { Text = "一击必杀", Location = new Point(95, gy), Size = new Size(110, 26) };
+            chkOneHit.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) { if (chkOneHit.Checked) SendExperimentCommand("一击必杀", BuildCombatExperimentLua("onehit")); else SendExperimentCommand("还原一击必杀", BuildLoopFeatureLua("onehit_off")); } };
+            grpGM.Controls.Add(chkOneHit);
 
-            addSection("速度 / 倍率");
+            if (grpGM.Controls.Count > 0) gy += rowStep + sectionGap;
             grpGM.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(10, gy + 6), Size = new Size(80, 20) });
             cmbAtkMul = new ComboBox { Location = new Point(95, gy + 3), Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
             cmbAtkMul.Items.AddRange(new object[] { "x2", "x4", "x8" });
             cmbAtkMul.SelectedIndex = 0;
             grpGM.Controls.Add(cmbAtkMul);
-            btnApplyAtkMul = new Button { Text = "应用倍率", Location = new Point(230, gy), Size = new Size(115, 30) };
+            btnApplyAtkMul = new Button { Text = "应用倍率", Location = new Point(230, gy), Size = new Size(100, 26) };
             btnApplyAtkMul.Click += (s, e) => ApplyAttackMultiplierSelection();
             grpGM.Controls.Add(btnApplyAtkMul);
-            btnResetAtkMul = new Button { Text = "还原倍率", Location = new Point(360, gy), Size = new Size(115, 30) };
-            btnResetAtkMul.Click += (s, e) => SendExperimentCommand("还原攻击倍率", BuildLoopFeatureLua("atk_mul_reset"));
+            btnResetAtkMul = new Button { Text = "还原倍率", Location = new Point(360, gy), Size = new Size(100, 26) };
+            btnResetAtkMul.Click += (s, e) => SendExperimentCommand("还原攻击倍率", BuildCombatExperimentLua("atk_mul_reset"));
             grpGM.Controls.Add(btnResetAtkMul);
 
             gy += rowStep;
             grpGM.Controls.Add(new Label { Text = "剧情速度", Location = new Point(10, gy + 6), Size = new Size(80, 20) });
-            cmbDialogSpeed = new ComboBox { Location = new Point(95, gy + 3), Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
-            cmbDialogSpeed.Items.AddRange(new object[] { "x20", "x80" });
-            cmbDialogSpeed.SelectedIndex = 0;
-            grpGM.Controls.Add(cmbDialogSpeed);
-            btnApplyDialogSpeed = new Button { Text = "应用速度", Location = new Point(230, gy), Size = new Size(115, 30) };
+            txtDialogSpeed = new TextBox { Location = new Point(95, gy + 3), Size = new Size(120, 24), Text = "80" };
+            grpGM.Controls.Add(txtDialogSpeed);
+            btnApplyDialogSpeed = new Button { Text = "应用速度", Location = new Point(230, gy), Size = new Size(100, 26) };
             btnApplyDialogSpeed.Click += (s, e) => ApplyDialogSpeedSelection();
             grpGM.Controls.Add(btnApplyDialogSpeed);
-            btnResetDialogSpeed = new Button { Text = "还原剧情速度", Location = new Point(360, gy), Size = new Size(115, 30) };
-            btnResetDialogSpeed.Click += (s, e) => SendExperimentCommand("还原剧情速度", BuildLoopFeatureLua("dialog_speed_reset"));
+            btnResetDialogSpeed = new Button { Text = "还原速度", Location = new Point(360, gy), Size = new Size(100, 26) };
+            btnResetDialogSpeed.Click += (s, e) => SendExperimentCommand("还原速度", BuildLoopFeatureLua("dialog_speed_reset"));
             grpGM.Controls.Add(btnResetDialogSpeed);
 
+            gy += rowStep;
+            grpGM.Controls.Add(new Label { Text = "攻击速度", Location = new Point(10, gy + 6), Size = new Size(80, 20) });
+            cmbAtkSpeed = new ComboBox { Location = new Point(95, gy + 3), Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
+            cmbAtkSpeed.Items.AddRange(new object[] { "x1.5", "x3", "x5", "x7.5", "x10", "x30" });
+            cmbAtkSpeed.SelectedIndex = 0;
+            grpGM.Controls.Add(cmbAtkSpeed);
+            btnApplyAtkSpeed = new Button { Text = "应用速度", Location = new Point(230, gy), Size = new Size(100, 26) };
+            btnApplyAtkSpeed.Click += (s, e) => ApplyAtkSpeedSelection();
+            grpGM.Controls.Add(btnApplyAtkSpeed);
+            btnResetAtkSpeed = new Button { Text = "还原攻击速度", Location = new Point(360, gy), Size = new Size(100, 26) };
+            btnResetAtkSpeed.Click += (s, e) => SendExperimentCommand("还原攻击速度", BuildCombatExperimentLua("atk_speed_reset"));
+            grpGM.Controls.Add(btnResetAtkSpeed);
+
             grpGM.Controls.Clear();
-            grpGM.Controls.Add(new Label { Text = "GM 功能", Location = new Point(10, 5), Size = new Size(120, 18), Font = new Font("Microsoft YaHei UI", 8, FontStyle.Bold), ForeColor = Color.FromArgb(45, 55, 72) });
-            tabGM = new Panel { Location = new Point(10, 28), Size = new Size(540, 250), BackColor = Color.White };
-            var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(540, 38), BackColor = Color.White };
-            var btnTabBattle = new Button { Text = "战斗增强", Location = new Point(0, 0), Size = new Size(126, 32), Tag = "nav" };
-            var btnTabBuff = new Button { Text = "Buff / 循环", Location = new Point(134, 0), Size = new Size(126, 32), Tag = "nav" };
-            var btnTabAssist = new Button { Text = "游戏辅助", Location = new Point(268, 0), Size = new Size(126, 32), Tag = "nav" };
-            var btnTabTools = new Button { Text = "换皮 / 速度", Location = new Point(402, 0), Size = new Size(126, 32), Tag = "nav" };
+            grpGM.Size = new Size(508, 340);
+            tabGM = new Panel { Location = new Point(4, 4), Size = new Size(500, 332), BackColor = Color.White };
+            var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(500, 32), BackColor = Color.White };
+            var btnTabInit = new Button { Text = "初始", Location = new Point(0, 4), Size = new Size(95, 24), Tag = "nav" };
+            var btnTabBattle = new Button { Text = "功能", Location = new Point(100, 4), Size = new Size(95, 24), Tag = "nav" };
+            var btnTabBuff = new Button { Text = "Buff", Location = new Point(200, 4), Size = new Size(95, 24), Tag = "nav" };
+            var btnTabAssist = new Button { Text = "辅助", Location = new Point(300, 4), Size = new Size(95, 24), Tag = "nav" };
+            var btnTabTools = new Button { Text = "测试", Location = new Point(400, 4), Size = new Size(95, 24), Tag = "nav" };
+            tabNav.Controls.Add(btnTabInit);
             tabNav.Controls.Add(btnTabBattle);
             tabNav.Controls.Add(btnTabBuff);
             tabNav.Controls.Add(btnTabAssist);
             tabNav.Controls.Add(btnTabTools);
             tabGM.Controls.Add(tabNav);
 
-            var tabBattle = new Panel { Location = new Point(0, 42), Size = new Size(540, 208), AutoScroll = true, BackColor = Color.White };
-            var tabBuff = new Panel { Location = new Point(0, 42), Size = new Size(540, 208), AutoScroll = true, BackColor = Color.White };
-            var tabAssist = new Panel { Location = new Point(0, 42), Size = new Size(540, 208), AutoScroll = true, BackColor = Color.White };
-            var tabTools = new Panel { Location = new Point(0, 42), Size = new Size(540, 208), AutoScroll = true, BackColor = Color.White };
+            tabInit = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
+            var tabBattle = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
+            var tabBuff = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
+            var tabAssist = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
+            var tabTools = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
+            tabGM.Controls.Add(tabInit);
             tabGM.Controls.Add(tabBattle);
             tabGM.Controls.Add(tabBuff);
             tabGM.Controls.Add(tabAssist);
             tabGM.Controls.Add(tabTools);
 
-            Button[] tabButtons = new Button[] { btnTabBattle, btnTabBuff, btnTabAssist, btnTabTools };
-            Panel[] tabPages = new Panel[] { tabBattle, tabBuff, tabAssist, tabTools };
+            Button[] tabButtons = new Button[] { btnTabInit, btnTabBattle, btnTabBuff, btnTabAssist, btnTabTools };
+            Panel[] tabPages = new Panel[] { tabInit, tabBattle, tabBuff, tabAssist, tabTools };
             Action<Button, bool> styleNavButton = (button, active) => {
                 button.FlatStyle = FlatStyle.Flat;
                 button.UseVisualStyleBackColor = false;
@@ -382,53 +534,91 @@ namespace FridaGMTool
                 }
                 page.BringToFront();
             };
+            btnTabInit.Click += (s, e) => activateTab(tabInit, btnTabInit);
             btnTabBattle.Click += (s, e) => activateTab(tabBattle, btnTabBattle);
             btnTabBuff.Click += (s, e) => activateTab(tabBuff, btnTabBuff);
             btnTabAssist.Click += (s, e) => activateTab(tabAssist, btnTabAssist);
             btnTabTools.Click += (s, e) => activateTab(tabTools, btnTabTools);
 
-            int[] yBattle = new int[] { 14 };
-            int[] yBuff = new int[] { 14 };
-            int[] yAssist = new int[] { 14 };
-            int[] yTools = new int[] { 14 };
-            Func<int, int, Point> pos = (col, yy) => new Point(10 + col * 130, yy);
+            // ── 初始 tab content ──
+            int[] yInit = new int[] { 4 };
+            Func<int, int, Point> posInit = (col, yy) => new Point(8 + col * 115, yy);
+            tabInit.Controls.Add(new Label { Text = "── 操作 ──", Location = new Point(8, yInit[0]), Size = new Size(480, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+            yInit[0] += 18;
+            btnBrowse = new Button { Text = "选择目录", Size = new Size(110, 26) };
+            btnBrowse.Click += BtnBrowse_Click;
+            btnStartGame = new Button { Text = "1.启动游戏", Size = new Size(110, 26) };
+            btnStartGame.Click += BtnStartGame_Click;
+            btnInject = new Button { Text = "2.注入工具", Size = new Size(110, 26) };
+            btnInject.Click += BtnInject_Click_B;
+            var btnTopMost = new Button { Text = "置顶窗口", Size = new Size(110, 26) };
+            btnTopMost.Click += (s, e) => { TopMost = !TopMost; btnTopMost.BackColor = TopMost ? Color.LightGreen : Color.White; btnTopMost.Text = TopMost ? "取消置顶" : "置顶窗口"; };
+            tabInit.Controls.Add(btnBrowse); btnBrowse.Location = posInit(0, yInit[0]);
+            tabInit.Controls.Add(btnStartGame); btnStartGame.Location = posInit(1, yInit[0]);
+            tabInit.Controls.Add(btnInject); btnInject.Location = posInit(2, yInit[0]);
+            tabInit.Controls.Add(btnTopMost); btnTopMost.Location = posInit(3, yInit[0]);
+            yInit[0] += rowStep;
+            btnRefresh = new Button { Text = "刷新状态", Size = new Size(110, 26) };
+            btnRefresh.Click += (s, e) => CheckState();
+            var btnOpenLog = new Button { Text = "打开日志", Size = new Size(110, 26) };
+            btnOpenLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) System.Diagnostics.Process.Start(UnifiedLogFile); else MessageBox.Show("日志文件不存在"); } catch (Exception ex) { MessageBox.Show("打开失败: " + ex.Message); } };
+            var btnOpenDir = new Button { Text = "打开目录", Size = new Size(110, 26) };
+            btnOpenDir.Click += (s, e) => { try { System.Diagnostics.Process.Start("explorer.exe", ToolDir); } catch { } };
+            var btnClearLog = new Button { Text = "清除日志", Size = new Size(110, 26) };
+            btnClearLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) File.WriteAllText(UnifiedLogFile, ""); AppendLog("日志已清除"); } catch { } };
+            tabInit.Controls.Add(btnRefresh); btnRefresh.Location = posInit(0, yInit[0]);
+            tabInit.Controls.Add(btnOpenLog); btnOpenLog.Location = posInit(1, yInit[0]);
+            tabInit.Controls.Add(btnOpenDir); btnOpenDir.Location = posInit(2, yInit[0]);
+            tabInit.Controls.Add(btnClearLog); btnClearLog.Location = posInit(3, yInit[0]);
+            yInit[0] += rowStep + 6;
+            lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(460, 18), ForeColor = Color.Gray };
+            tabInit.Controls.Add(lblStatus);
+            yInit[0] += 22;
+            tabInit.Controls.Add(new Label { Text = "── 公告 ──", Location = new Point(8, yInit[0]), Size = new Size(480, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+            yInit[0] += 18;
+            tabInit.Controls.Add(new Label { Text = "测试版本  功能单人世界使用  登录界面注入", Location = new Point(12, yInit[0]), Size = new Size(460, 18), ForeColor = Color.FromArgb(160, 100, 100), Font = new Font("Microsoft YaHei", 8, FontStyle.Bold) });
+
+            int[] yBattle = new int[] { 4 };
+            int[] yBuff = new int[] { 4 };
+            int[] yAssist = new int[] { 4 };
+            int[] yTools = new int[] { 4 };
+            Func<int, int, Point> pos = (col, yy) => new Point(8 + col * 115, yy);
             Action<Control, string, int[]> addTabSection = (parent, title, yref) => {
                 if (parent.Controls.Count > 0) yref[0] += rowStep + sectionGap;
-                parent.Controls.Add(new Label { Text = "── " + title + " ──", Location = new Point(10, yref[0]), Size = new Size(500, 18), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 8, FontStyle.Bold) });
-                yref[0] += 24;
+                parent.Controls.Add(new Label { Text = "── " + title + " ──", Location = new Point(8, yref[0]), Size = new Size(480, 14), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+                yref[0] += 18;
             };
             Action<Control, Control, int, int[]> place = (parent, control, col, yref) => {
                 control.Location = pos(col, yref[0]);
                 parent.Controls.Add(control);
             };
 
-            addTabSection(tabBattle, "战斗增强", yBattle);
-            place(tabBattle, btnGod, 0, yBattle);
-            place(tabBattle, btnStamina, 1, yBattle);
-            place(tabBattle, btnStaminaDive, 2, yBattle);
-            place(tabBattle, btnInvis, 3, yBattle);
+            addTabSection(tabBattle, "功能", yBattle);
+            place(tabBattle, chkGod, 0, yBattle);
+            place(tabBattle, chkInvis, 1, yBattle);
+            place(tabBattle, chkNpcDumb, 2, yBattle);
             yBattle[0] += rowStep;
-            place(tabBattle, btnCancelInvis, 0, yBattle);
-            place(tabBattle, btnStaminaEmpty, 1, yBattle);
-            place(tabBattle, btnStaminaResetAll, 2, yBattle);
-            yBattle[0] += rowStep;
-            place(tabBattle, btnYyNpcDumb, 0, yBattle);
-            place(tabBattle, btnYySuperDodge, 1, yBattle);
+            place(tabBattle, chkSuperDodge, 0, yBattle);
+            place(tabBattle, chkOneHit, 1, yBattle);
 
-            addTabSection(tabBuff, "Buff 施加 (一次性)", yBuff);
+            addTabSection(tabBattle, "剧情速度", yBattle);
+            tabBattle.Controls.Add(new Label { Text = "倍率", Location = new Point(8, yBattle[0] + 6), Size = new Size(40, 20) });
+            txtDialogSpeed.Location = new Point(93, yBattle[0] + 3);
+            tabBattle.Controls.Add(txtDialogSpeed);
+            btnApplyDialogSpeed.Location = new Point(218, yBattle[0]);
+            tabBattle.Controls.Add(btnApplyDialogSpeed);
+            btnResetDialogSpeed.Location = new Point(323, yBattle[0]);
+            tabBattle.Controls.Add(btnResetDialogSpeed);
+
+            addTabSection(tabBuff, "Buff 施加", yBuff);
             place(tabBuff, btnAtkBuff, 0, yBuff);
             place(tabBuff, btnDefBuff, 1, yBuff);
-            place(tabBuff, btnGatherBuff, 2, yBuff);
-            place(tabBuff, btnYyAutoBuff, 3, yBuff);
+            place(tabBuff, btnMinBuff, 2, yBuff);
+            place(tabBuff, btnGatherBuff, 3, yBuff);
             yBuff[0] += rowStep;
-            place(tabBuff, btnCombatSkill, 0, yBuff);
-            place(tabBuff, btnScrollBuff, 1, yBuff);
-            place(tabBuff, btnAttrBuff, 2, yBuff);
-            place(tabBuff, btnAuxBuff, 3, yBuff);
-            yBuff[0] += rowStep;
-            place(tabBuff, btnUnknownBuff, 0, yBuff);
-            place(tabBuff, btnRemoveAllBuffs, 1, yBuff);
-            place(tabBuff, btnDisableLogs, 2, yBuff);
+            place(tabBuff, btnAuxBuff, 0, yBuff);
+            place(tabBuff, btnUnknownBuff, 1, yBuff);
+            place(tabBuff, btnRemoveAllBuffs, 2, yBuff);
             place(tabBuff, btnYyRemoveBuff, 3, yBuff);
 
             addTabSection(tabBuff, "循环功能 (再点停止)", yBuff);
@@ -437,74 +627,125 @@ namespace FridaGMTool
             place(tabBuff, btnLoopLoot, 2, yBuff);
             place(tabBuff, btnLoopRecover, 3, yBuff);
 
-            addTabSection(tabAssist, "游戏辅助", yAssist);
+            addTabSection(tabAssist, "辅助", yAssist);
             place(tabAssist, btnYyAutoLoot, 0, yAssist);
-            place(tabAssist, btnAutoLootPlus, 1, yAssist);
-            place(tabAssist, btnAutoChest, 2, yAssist);
-            place(tabAssist, btnYyRecover, 3, yAssist);
+            place(tabAssist, btnYyRecover, 1, yAssist);
+            place(tabAssist, btnRhythmGame, 2, yAssist);
+            place(tabAssist, btnChessWin, 3, yAssist);
             yAssist[0] += rowStep;
-            place(tabAssist, btnRhythmGame, 0, yAssist);
-            place(tabAssist, btnChessWin, 1, yAssist);
-            place(tabAssist, btnPitchPot, 2, yAssist);
-            yAssist[0] += rowStep;
+            place(tabAssist, btnPitchPot, 0, yAssist);
+            btnCutsceneKill = new Button { Text = "终止过场动画", Size = new Size(110, 26) };
+            btnCutsceneKill.Click += (s, e) => SendExperimentCommand("终止过场动画", BuildCombatExperimentLua("cutscene_kill"));
+            place(tabAssist, btnCutsceneKill, 1, yAssist);
+            place(tabAssist, btnStealthFlags, 2, yAssist);
+
+            addTabSection(tabAssist, "面板", yAssist);
             place(tabAssist, btnGmTrainPanel, 0, yAssist);
             place(tabAssist, btnTestLuaMenu, 1, yAssist);
             place(tabAssist, btnYyLoadScript, 2, yAssist);
             place(tabAssist, btnCnMenuLoad, 3, yAssist);
 
-            addTabSection(tabTools, "衣服换皮", yTools);
-            tabTools.Controls.Add(new Label { Text = "衣服换皮", Location = new Point(10, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbOutfit.Location = new Point(95, yTools[0] + 3);
-            cmbOutfit.Size = new Size(185, 24);
-            tabTools.Controls.Add(cmbOutfit);
-            btnApplyOutfit.Location = new Point(290, yTools[0]);
-            tabTools.Controls.Add(btnApplyOutfit);
-            btnOpenOutfitPicker.Location = new Point(405, yTools[0]);
-            tabTools.Controls.Add(btnOpenOutfitPicker);
+            addTabSection(tabTools, "测试", yTools);
+            place(tabTools, btnStamina, 0, yTools);
+            place(tabTools, btnStaminaDive, 1, yTools);
+            place(tabTools, btnStaminaEmpty, 2, yTools);
+            place(tabTools, btnStaminaResetAll, 3, yTools);
 
             addTabSection(tabTools, "速度 / 倍率", yTools);
-            tabTools.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(10, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbAtkMul.Location = new Point(95, yTools[0] + 3);
+            tabTools.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(8, yTools[0] + 6), Size = new Size(80, 20) });
+            cmbAtkMul.Location = new Point(93, yTools[0] + 3);
             tabTools.Controls.Add(cmbAtkMul);
-            btnApplyAtkMul.Location = new Point(230, yTools[0]);
+            btnApplyAtkMul.Location = new Point(218, yTools[0]);
             tabTools.Controls.Add(btnApplyAtkMul);
-            btnResetAtkMul.Location = new Point(360, yTools[0]);
+            btnResetAtkMul.Location = new Point(323, yTools[0]);
             tabTools.Controls.Add(btnResetAtkMul);
+
             yTools[0] += rowStep;
-            tabTools.Controls.Add(new Label { Text = "剧情速度", Location = new Point(10, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbDialogSpeed.Location = new Point(95, yTools[0] + 3);
-            tabTools.Controls.Add(cmbDialogSpeed);
-            btnApplyDialogSpeed.Location = new Point(230, yTools[0]);
-            tabTools.Controls.Add(btnApplyDialogSpeed);
-            btnResetDialogSpeed.Location = new Point(360, yTools[0]);
-            tabTools.Controls.Add(btnResetDialogSpeed);
+            tabTools.Controls.Add(new Label { Text = "攻击速度", Location = new Point(8, yTools[0] + 6), Size = new Size(80, 20) });
+            cmbAtkSpeed.Location = new Point(93, yTools[0] + 3);
+            tabTools.Controls.Add(cmbAtkSpeed);
+            btnApplyAtkSpeed.Location = new Point(218, yTools[0]);
+            tabTools.Controls.Add(btnApplyAtkSpeed);
+            btnResetAtkSpeed.Location = new Point(323, yTools[0]);
+            tabTools.Controls.Add(btnResetAtkSpeed);
+
+            addTabSection(tabTools, "坐标", yTools);
+            Button btnLogPos = new Button { Text = "记录坐标", Size = new Size(110, 26) };
+            btnLogPos.Click += (s, ev) => SendExperimentCommand("记录坐标", BuildLuaEnvelope("log_pos", @"
+__try('log_position', function()
+  local mp = type(G) == 'table' and G.main_player or nil
+  if not mp then error('main_player missing') end
+  local pos = mp.get_position and mp:get_position() or mp.position or mp.pos
+  if pos then
+    __add('坐标', string.format('%.1f, %.1f, %.1f', pos.x or 0, pos.y or 0, pos.z or 0))
+    __add('raw', tostring(pos.x), tostring(pos.y), tostring(pos.z))
+  else
+    __add('坐标', '无法获取位置')
+  end
+end)
+"));
+            place(tabTools, btnLogPos, 0, yTools);
+            tabTools.Controls.Add(new Label { Text = "坐标", Location = new Point(123, yTools[0] + 6), Size = new Size(40, 20) });
+            txtCoordInput = new TextBox { Location = new Point(163, yTools[0] + 3), Size = new Size(150, 24), Text = "" };
+            tabTools.Controls.Add(txtCoordInput);
+            Button btnTeleportTo = new Button { Text = "传送", Location = new Point(318, yTools[0]), Size = new Size(60, 30) };
+            btnTeleportTo.Click += (s, ev) => {
+                string coordText = txtCoordInput.Text.Trim();
+                if (string.IsNullOrEmpty(coordText)) { MessageBox.Show("请输入坐标，格式: x,y,z"); return; }
+                SendExperimentCommand("传送到坐标", BuildLuaEnvelope("teleport_to", @"
+local coords = '" + EscapeLuaString(coordText) + @"'
+local parts = {}
+for num in coords:gmatch('[%-]?%d+%.?%d*') do parts[#parts + 1] = tonumber(num) end
+if #parts < 3 then __add('error', '需要x,y,z三个坐标'); return end
+local tx, ty, tz = parts[1], parts[2], parts[3]
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then __add('error', 'main_player missing'); return end
+local apis = {
+  {'set_position', function() mp:set_position(tx, ty, tz) end},
+  {'tp_to', function() mp:tp_to(tx, ty, tz) end},
+  {'warp_to', function() mp:warp_to(tx, ty, tz) end},
+  {'teleport_to', function() mp:teleport_to(tx, ty, tz) end},
+  {'position_assign', function() mp.position.x = tx; mp.position.y = ty; mp.position.z = tz end},
+}
+for _, api in ipairs(apis) do
+  local name, fn = api[1], api[2]
+  local ok, err = pcall(fn)
+  if ok then __add('传送', name .. ' -> ' .. string.format('%.1f,%.1f,%.1f', tx, ty, tz)); return end
+  __add('skip', name .. ': ' .. tostring(err))
+end
+__add('传送', '失败: 无可用传送API')
+"));
+            };
+            tabTools.Controls.Add(btnTeleportTo);
 
             grpGM.Controls.Add(tabGM);
             Controls.Add(grpGM);
-            y += 298;
-            ClientSize = new Size(580, grpGM.Bottom + 10);
+            y += 270;
+            ClientSize = new Size(516, grpGM.Bottom + 4);
             UpdateCommPaths();
             EnsureBuffConfigFile();
             LoadConfig();
             ApplyCleanStyle();
-            activateTab(tabBattle, btnTabBattle);
+            activateTab(tabInit, btnTabInit);
+            suppressCheckboxEvents = false;
             SetGMEnabled(false);
             CheckState();
         }
 
         void BtnBrowse_Click(object sender, EventArgs e)
         {
-            var dlg = new FolderBrowserDialog { Description = "选择游戏主目录（包含 yysls_fast 文件夹的目录）" };
+            var dlg = new FolderBrowserDialog { Description = "选择游戏主目录（包含 yysls_fast 或 yysls_medium 的目录）" };
             if (!string.IsNullOrEmpty(gameRootPath) && Directory.Exists(gameRootPath)) dlg.SelectedPath = gameRootPath;
             if (dlg.ShowDialog() == DialogResult.OK)
             {
                 string binPath = Path.Combine(dlg.SelectedPath, GameSubPath);
+                if (!File.Exists(Path.Combine(binPath, GameExeName)))
+                    binPath = Path.Combine(dlg.SelectedPath, GameSubPathAlt);
                 string exePath = Path.Combine(binPath, GameExeName);
                 if (File.Exists(exePath))
                 {
                     gameRootPath = dlg.SelectedPath;
                     gameBinPath = binPath;
-                    UpdatePathLabel();
                     UpdateCommPaths();
                     SaveConfig();
                     UpdateStatus();
@@ -515,14 +756,60 @@ namespace FridaGMTool
 
         void UpdateCommPaths()
         {
-            string commRoot = !string.IsNullOrEmpty(gameBinPath) ? gameBinPath : ToolDir;
-            CmdFile = Path.Combine(commRoot, "gm_cmd.txt");
-            CmdResultFile = Path.Combine(commRoot, "gm_cmd_result.txt");
-            ToolResultFile = Path.Combine(commRoot, "gm_tool_result.txt");
+            // 尝试读取已有的随机化配置
+            string cfgPath = Path.Combine(ToolDir, "svc.cfg");
+            if (File.Exists(cfgPath))
+            {
+                try
+                {
+                    var lines = File.ReadAllLines(cfgPath);
+                    if (lines.Length >= 4)
+                    {
+                        MMF_NAME = lines[0];
+                        CmdFile = Path.Combine(ToolDir, lines[1]);
+                        CmdResultFile = Path.Combine(ToolDir, lines[2]);
+                        UnifiedLogFile = Path.Combine(ToolDir, lines[3]);
+                        GadgetLogFile = UnifiedLogFile;
+                        AuxLogFile = UnifiedLogFile;
+                        ToolResultFile = Path.Combine(ToolDir, lines[2]);
+                        ToolResultCompatFile = Path.Combine(ToolDir, lines[2]);
+                        return;
+                    }
+                } catch {}
+            }
+            // 无配置则用默认名（兼容旧版）
+            CmdFile = Path.Combine(ToolDir, "gm_cmd.txt");
+            CmdResultFile = Path.Combine(ToolDir, "gm_cmd_result.txt");
+            ToolResultFile = Path.Combine(ToolDir, "gm_tool_result.txt");
             ToolResultCompatFile = Path.Combine(ToolDir, "gm_tool_result.txt");
-            UnifiedLogFile = Path.Combine(commRoot, "gm_tool.log");
-            FridaLogFile = UnifiedLogFile;
-            HackLogFile = UnifiedLogFile;
+            UnifiedLogFile = Path.Combine(ToolDir, "gm_tool.log");
+            GadgetLogFile = UnifiedLogFile;
+            AuxLogFile = UnifiedLogFile;
+        }
+
+        static void EnsurePayloadToolDir(string targetDir)
+        {
+            string payloadPath = Path.Combine(targetDir, "gm_payload.js");
+            if (!File.Exists(payloadPath)) return;
+            string text = File.ReadAllText(payloadPath, new UTF8Encoding(false));
+            string dirLiteral = targetDir.Replace("\\", "\\\\");
+            string newLine = "var TOOL_DIR = \"" + dirLiteral + "\";";
+            // 查找已有的 TOOL_DIR 行并替换
+            int idx = text.IndexOf("var TOOL_DIR =");
+            if (idx >= 0)
+            {
+                int end = text.IndexOf(';', idx);
+                if (end > idx)
+                    text = text.Substring(0, idx) + newLine + text.Substring(end + 1);
+                else
+                    text = text.Substring(0, idx) + newLine + "\n" + text.Substring(idx);
+            }
+            else
+            {
+                // 没有TOOL_DIR行，在文件开头插入
+                text = newLine + "\n" + text;
+            }
+            File.WriteAllText(payloadPath, text, new UTF8Encoding(false));
         }
 
         string GetGameFilePath(string fileName)
@@ -537,143 +824,337 @@ namespace FridaGMTool
             return primaryPath;
         }
 
-        string BuildFridaGadgetConfig()
+        string BuildGadgetConfig()
         {
             return "{\r\n  \"interaction\": {\r\n    \"type\": \"script\",\r\n    \"path\": \"gm_payload.js\"\r\n  }\r\n}\r\n";
         }
 
-        void WriteAutoLoadFilesToGameDir()
+        // 内嵌DLL注入：不依赖外部注入器，直接用Win32 API完成
+        bool InternalInjectDll(int processId, string dllPath)
         {
-            string gadgetSource = Path.Combine(ToolDir, "frida-gadget.dll");
-            if (!File.Exists(gadgetSource)) gadgetSource = ResolvePortableToolPath("frida-gadget.dll", PortableToolFallbackDir, OriginalFridaGadget);
-            if (!File.Exists(gadgetSource)) throw new FileNotFoundException("frida-gadget.dll 未找到", gadgetSource);
-
-            string payloadSource = Path.Combine(ToolDir, "gm_payload.js");
-            if (!File.Exists(payloadSource)) payloadSource = PayloadJs;
-            if (!File.Exists(payloadSource)) throw new FileNotFoundException("gm_payload.js 未找到", payloadSource);
-            string payloadText = File.ReadAllText(payloadSource, Encoding.UTF8);
-
-            string targetPayloadPath = Path.Combine(gameBinPath, "gm_payload.js");
-            string configPath = Path.Combine(gameBinPath, "frida-gadget.config");
-            string gadgetTarget = Path.Combine(gameBinPath, "frida-gadget.dll");
-
-            File.Copy(gadgetSource, gadgetTarget, true);
-            File.WriteAllText(targetPayloadPath, payloadText, new UTF8Encoding(false));
-            File.WriteAllText(configPath, BuildFridaGadgetConfig(), new UTF8Encoding(false));
-        }
-
-        void UpdatePathLabel()
-        {
-            if (lblGamePath == null) return;
-            if (string.IsNullOrEmpty(gameRootPath))
-            {
-                lblGamePath.Text = "未选择目录";
-                return;
-            }
-            string name = Path.GetFileName(gameRootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-            if (string.IsNullOrEmpty(name)) name = gameRootPath;
-            lblGamePath.Text = "当前: " + name;
-        }
-
-        void BtnCopyFiles_Click_B(object sender, EventArgs e)
-        {
-            if (string.IsNullOrEmpty(gameBinPath)) { MessageBox.Show("请先选择游戏目录！"); return; }
+            AppendLog("[内嵌注入] 开始注入 PID=" + processId);
+            IntPtr hProcess = IntPtr.Zero;
+            IntPtr remoteMem = IntPtr.Zero;
+            IntPtr hThread = IntPtr.Zero;
             try
             {
-                AppendLog("复制方案B文件到游戏目录...");
-                string dinput8Source = Path.Combine(ToolDir, "dinput8.dll");
-                if (!File.Exists(dinput8Source)) dinput8Source = OriginalDinput8;
-                File.Copy(dinput8Source, Path.Combine(gameBinPath, "dinput8.dll"), true);
-                AppendLog("  dinput8.dll 已复制");
-                WriteAutoLoadFilesToGameDir();
-                AppendLog("  frida-gadget.dll 已复制");
-                AppendLog("  gm_payload.js 已写入");
-                AppendLog("  frida-gadget.config 已写入");
-                UpdateCommPaths();
-                try { if (File.Exists(CmdFile)) File.Delete(CmdFile); } catch { }
-                try { if (File.Exists(CmdResultFile)) File.Delete(CmdResultFile); } catch { }
-                try { if (File.Exists(ToolResultFile)) File.Delete(ToolResultFile); } catch { }
-                try { if (File.Exists(UnifiedLogFile)) File.Delete(UnifiedLogFile); } catch { }
-                AppendLog("复制完成！方案B自动加载文件已提前写入游戏目录。");
-                UpdateStatus();
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("复制失败: " + ex.Message);
-                AppendLog("ERROR: " + ex.Message);
-            }
-        }
-
-        void BtnClearFiles_Click_B(object sender, EventArgs e)
-        {
-            if (string.IsNullOrEmpty(gameBinPath)) { MessageBox.Show("请先选择游戏目录！"); return; }
-            try
-            {
-                AppendLog("清理复制到游戏目录的文件...");
-                int removed = 0;
-                foreach (string name in new[] { "dinput8.dll", "frida-gadget.dll", "gm_payload.js", "frida-gadget.config", "gm_cmd.txt", "frida_ready.txt", "frida_log.txt", "gm_cmd_result.txt", "hack_log.txt", "gm_tool_result.txt", "gm_tool.log", "connector_log.txt", "gm_tool_ui.log", "gm_tool_all.log" })
+                hProcess = OpenProcess(PROCESS_ALL_ACCESS, false, processId);
+                if (hProcess == IntPtr.Zero)
                 {
-                    string path = Path.Combine(gameBinPath, name);
-                    try
-                    {
-                        if (File.Exists(path))
-                        {
-                            File.Delete(path);
-                            removed++;
-                            AppendLog("  已删除: " + path);
-                        }
-                    }
-                    catch { }
+                    AppendLog("[内嵌注入] OpenProcess 失败 (Error=" + Marshal.GetLastWin32Error() + ")");
+                    return false;
                 }
 
-                ClearManagedFiles();
-                UpdateCommPaths();
-                isReady = false;
-                AppendLog("清理完成，共删除 " + removed + " 个游戏目录文件；工具目录临时文件已清理。");
-                UpdateStatus();
+                // 获取 LoadLibraryW 地址（W 版以支持 Unicode/中文路径）
+                IntPtr hKernel32 = GetModuleHandle("kernel32.dll");
+                if (hKernel32 == IntPtr.Zero)
+                {
+                    AppendLog("[内嵌注入] GetModuleHandle(kernel32) 失败");
+                    return false;
+                }
+                IntPtr loadLibAddr = GetProcAddress(hKernel32, "LoadLibraryW");
+                if (loadLibAddr == IntPtr.Zero)
+                {
+                    AppendLog("[内嵌注入] 获取API地址失败");
+                    return false;
+                }
+                AppendLog("[内嵌注入] API地址已获取");
+
+                // 在目标进程分配内存存放DLL路径 (Unicode + 末尾 NUL，按字节算 = (len+1)*2)
+                byte[] dllPathBytes = Encoding.Unicode.GetBytes(dllPath + "\0");
+                remoteMem = VirtualAllocEx(hProcess, IntPtr.Zero, (uint)dllPathBytes.Length, MEM_COMMIT, PAGE_READWRITE);
+                if (remoteMem == IntPtr.Zero)
+                {
+                    AppendLog("[内嵌注入] VirtualAllocEx 失败 (Error=" + Marshal.GetLastWin32Error() + ")");
+                    return false;
+                }
+                AppendLog("[内嵌注入] 远程内存已分配");
+
+                // 写入DLL路径
+                IntPtr bytesWritten;
+                if (!WriteProcessMemory(hProcess, remoteMem, dllPathBytes, (IntPtr)dllPathBytes.Length, out bytesWritten))
+                {
+                    AppendLog("[内嵌注入] WriteProcessMemory 失败 (Error=" + Marshal.GetLastWin32Error() + ")");
+                    return false;
+                }
+                AppendLog("[内嵌注入] DLL路径已写入 " + bytesWritten + " 字节");
+
+                // 创建远程线程执行 LoadLibraryA(dllPath)
+                uint threadId;
+                hThread = CreateRemoteThread(hProcess, IntPtr.Zero, 0, loadLibAddr, remoteMem, 0, out threadId);
+                if (hThread == IntPtr.Zero)
+                {
+                    AppendLog("[内嵌注入] CreateRemoteThread 失败 (Error=" + Marshal.GetLastWin32Error() + ")");
+                    return false;
+                }
+                AppendLog("[内嵌注入] 远程线程已创建");
+
+                // 等待线程完成（最多10秒）
+                uint waitResult = WaitForSingleObject(hThread, 10000);
+                uint exitCode;
+                GetExitCodeThread(hThread, out exitCode);
+                AppendLog("[内嵌注入] 线程结束 wait=" + waitResult);
+
+                if (exitCode == 0)
+                {
+                    AppendLog("[内嵌注入] LoadLibrary返回空，注入失败");
+                    return false;
+                }
+
+                AppendLog("[内嵌注入] 注入成功");
+
+                // 从PEB摘除模块，使core.dll不在模块列表中可见
+                // 注意：GetExitCodeThread返回uint在x64下会截断模块基址，因此按文件名在PEB中查找
+                try
+                {
+                    bool hidden = HideModuleFromPEB(hProcess, "core.dll");
+                    if (hidden)
+                        AppendLog("[内嵌注入] 模块已隐藏");
+                    else
+                        AppendLog("[内嵌注入] 隐藏未成功（不影响功能）");
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("[内嵌注入] 隐藏异常: " + ex.Message);
+                }
+
+                // ErasePE暂时禁用（擦除PE头会导致Frida内部状态损坏）
+
+                return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show("清理失败: " + ex.Message);
-                AppendLog("ERROR: " + ex.Message);
+                AppendLog("[内嵌注入] 异常: " + ex.Message);
+                return false;
+            }
+            finally
+            {
+                if (hThread != IntPtr.Zero) CloseHandle(hThread);
+                if (remoteMem != IntPtr.Zero) VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+                if (hProcess != IntPtr.Zero) CloseHandle(hProcess);
             }
         }
 
-        void BtnInjectFrida_Click_B(object sender, EventArgs e)
+        // 从PEB的LDR模块链表中按文件名查找并摘除模块（x64目标进程）
+        bool HideModuleFromPEB(IntPtr hProcess, string targetDllName)
         {
-            string injectorPath = ResolvePortableToolPath(PortableInjectorName, PortableToolFallbackDir, OriginalInjector);
-            string gadgetPath = Path.Combine(gameBinPath, "frida-gadget.dll");
-            string payloadPath = Path.Combine(gameBinPath, "gm_payload.js");
-            string gadgetConfigPath = Path.Combine(gameBinPath, "frida-gadget.config");
-            if (!File.Exists(injectorPath)) { MessageBox.Show("注入器不存在:\n" + injectorPath); return; }
-            if (!File.Exists(gadgetPath)) { MessageBox.Show("frida-gadget.dll 不存在:\n" + gadgetPath); return; }
+            // 通过NtQueryInformationProcess获取PEB地址
+            byte[] pbi = new byte[48]; // PROCESS_BASIC_INFORMATION x64 = 48 bytes
+            int retLen;
+            int status = NtQueryInformationProcess(hProcess, 0 /* ProcessBasicInformation */, pbi, pbi.Length, out retLen);
+            if (status != 0)
+            {
+                AppendLog("[HideModule] NtQueryInformationProcess 失败 status=" + status);
+                return false;
+            }
+            // PEB地址在PBI偏移8（x64）
+            long pebAddr = BitConverter.ToInt64(pbi, 8);
+            if (pebAddr == 0) return false;
+
+            // 读取PEB.Ldr (PEB+0x18)
+            byte[] ldrBuf = new byte[8];
+            IntPtr bytesRead;
+            if (!ReadProcessMemory(hProcess, new IntPtr(pebAddr + 0x18), ldrBuf, (IntPtr)8, out bytesRead)) return false;
+            long ldrAddr = BitConverter.ToInt64(ldrBuf, 0);
+            if (ldrAddr == 0) return false;
+
+            // 使用InMemoryOrderModuleList遍历（Ldr+0x20），此链表中BaseDllName在entry+0x58
+            byte[] flinkBuf = new byte[8];
+            if (!ReadProcessMemory(hProcess, new IntPtr(ldrAddr + 0x20), flinkBuf, (IntPtr)8, out bytesRead)) return false;
+            long headFlink = BitConverter.ToInt64(flinkBuf, 0);
+
+            long current = headFlink;
+            int safety = 0;
+            while (current != 0 && safety < 2048)
+            {
+                safety++;
+                // InMemoryOrderLinks的Flink指向下一个节点的InMemoryOrderLinks字段
+                // LDR_DATA_TABLE_ENTRY中InMemoryOrderLinks在偏移0x10
+                // 所以entry基地址 = current - 0x10
+                long entryBase = current - 0x10;
+
+                // UNICODE_STRING x64: Length(2) + MaximumLength(2) + Padding(4) + Buffer(8)
+                byte[] uniBuf = new byte[16];
+                if (!ReadProcessMemory(hProcess, new IntPtr(entryBase + 0x58), uniBuf, (IntPtr)16, out bytesRead)) break;
+                ushort nameLen = BitConverter.ToUInt16(uniBuf, 0);
+                long nameBuf = BitConverter.ToInt64(uniBuf, 8);
+
+                if (nameLen > 0 && nameLen <= 520 && nameBuf != 0)
+                {
+                    byte[] nameBytes = new byte[nameLen];
+                    if (ReadProcessMemory(hProcess, new IntPtr(nameBuf), nameBytes, (IntPtr)nameLen, out bytesRead))
+                    {
+                        string dllName = System.Text.Encoding.Unicode.GetString(nameBytes);
+                        if (dllName.Equals(targetDllName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            // 找到目标模块，从三个链表中摘除
+                            bool unlinked = true;
+
+                            // 摘除 InLoadOrderLinks (entry+0x00)
+                            unlinked &= UnlinkListEntry(hProcess, new IntPtr(entryBase + 0x00));
+
+                            // 摘除 InMemoryOrderLinks (entry+0x10)
+                            unlinked &= UnlinkListEntry(hProcess, new IntPtr(entryBase + 0x10));
+
+                            // 摘除 InInitializationOrderLinks (entry+0x20)
+                            unlinked &= UnlinkListEntry(hProcess, new IntPtr(entryBase + 0x20));
+
+                            return unlinked;
+                        }
+                    }
+                }
+
+                // 读取下一个节点的InMemoryOrderLinks.Flink
+                if (!ReadProcessMemory(hProcess, new IntPtr(current), flinkBuf, (IntPtr)8, out bytesRead)) break;
+                current = BitConverter.ToInt64(flinkBuf, 0);
+
+                // 回到链表头则结束
+                if (current == headFlink) break;
+            }
+            AppendLog("[HideModule] 未在PEB中找到目标模块");
+            return false;
+        }
+
+        // 摘除一个LIST_ENTRY：prev->Flink = next, next->Blink = prev
+        bool UnlinkListEntry(IntPtr hProcess, IntPtr listEntryAddr)
+        {
+            byte[] buf = new byte[16]; // Flink(8) + Blink(8)
+            IntPtr bytesRead, bytesWritten;
+            if (!ReadProcessMemory(hProcess, listEntryAddr, buf, (IntPtr)16, out bytesRead)) return false;
+            long flink = BitConverter.ToInt64(buf, 0);
+            long blink = BitConverter.ToInt64(buf, 8);
+            if (flink == 0 || blink == 0) return false;
+
+            // prev->Flink = next  (blink+0x00 = flink)
+            byte[] flinkBytes = BitConverter.GetBytes(flink);
+            if (!WriteProcessMemory(hProcess, new IntPtr(blink), flinkBytes, (IntPtr)8, out bytesWritten)) return false;
+
+            // next->Blink = prev  (flink+0x08 = blink)
+            byte[] blinkBytes = BitConverter.GetBytes(blink);
+            if (!WriteProcessMemory(hProcess, new IntPtr(flink + 8), blinkBytes, (IntPtr)8, out bytesWritten)) return false;
+
+            return true;
+        }
+
+        void BtnInject_Click_B(object sender, EventArgs e)
+        {
+            string gadgetPath = Path.Combine(ToolDir, "core.dll");
+            string payloadPath = Path.Combine(ToolDir, "gm_payload.js");
+            string gadgetConfigPath = Path.Combine(ToolDir, "core.config");
+            if (!File.Exists(gadgetPath)) { MessageBox.Show("组件文件不存在:\n" + gadgetPath); return; }
             if (!File.Exists(payloadPath) || !File.Exists(gadgetConfigPath))
             {
-                MessageBox.Show("方案B文件不完整，请先点\"复制文件\"。\n\n缺少文件目录:\n" + gameBinPath);
+                MessageBox.Show("工具目录文件不完整，请确认以下文件存在:\n" + ToolDir);
                 return;
             }
             var procs = Process.GetProcessesByName("yysls");
             if (procs.Length == 0) { MessageBox.Show("游戏未运行！请先启动游戏。"); return; }
+            int targetPid = procs[0].Id;
+            try { foreach (var p in procs) p.Dispose(); } catch { }
 
+            // 注入前生成随机化通信配置
+            GenerateRandomCommConfig();
+
+            // 诊断：显示通信配置信息
+            AppendLog("[配置] ToolDir: " + ToolDir);
+            AppendLog("[配置] 日志文件: " + Path.GetFileName(UnifiedLogFile));
+            AppendLog("[配置] MMF名称: " + MMF_NAME);
+            AppendLog("[配置] gm_payload.js TOOL_DIR: " + ToolDir.Replace("\\", "\\\\"));
+
+            // 注入前先创建共享内存，让Frida端能打开
+            EnsureSharedMemory();
+
+            // 优先使用内嵌注入（无外部注入器特征）
+            AppendLog("=== 尝试内嵌注入（无注入器特征）===");
+            bool injected = InternalInjectDll(targetPid, gadgetPath);
+            if (injected)
+            {
+                AppendLog("内嵌注入成功！等待初始化...");
+                UpdateStatus();
+                // 注入后延迟检查日志，诊断初始化问题
+                var diagTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+                diagTimer.Tick += (s2, e2) =>
+                {
+                    diagTimer.Stop();
+                    diagTimer.Dispose();
+                    DiagnoseInjectionResult();
+                };
+                diagTimer.Start();
+                return;
+            }
+
+            MessageBox.Show("内嵌注入失败，请检查游戏进程权限。");
+            AppendLog("内嵌注入失败");
+        }
+
+        void DiagnoseInjectionResult()
+        {
             try
             {
-                AppendLog("运行注入器: " + injectorPath);
-                AppendLog("方案B请注入游戏目录中的: " + gadgetPath);
-                AppendLog("注入前请确保游戏目录内已存在 dinput8.dll、frida-gadget.dll、gm_payload.js、frida-gadget.config。");
-                Process.Start(new ProcessStartInfo
+                // 检查随机化日志文件
+                string logPath = UnifiedLogFile;
+                bool logExists = !string.IsNullOrEmpty(logPath) && File.Exists(logPath);
+
+                // 也检查游戏目录下是否有日志
+                string gameLogPath = !string.IsNullOrEmpty(gameBinPath) ? Path.Combine(gameBinPath, Path.GetFileName(UnifiedLogFile)) : "";
+                bool gameLogExists = !string.IsNullOrEmpty(gameLogPath) && File.Exists(gameLogPath);
+
+                // 检查旧默认名日志
+                string oldLogPath = Path.Combine(ToolDir, "gm_tool.log");
+                bool oldLogExists = File.Exists(oldLogPath);
+
+                // 检查svc.cfg是否存在
+                string cfgPath = Path.Combine(ToolDir, "svc.cfg");
+                bool cfgExists = File.Exists(cfgPath);
+
+                if (logExists)
                 {
-                    FileName = injectorPath,
-                    WorkingDirectory = Path.GetDirectoryName(injectorPath),
-                    UseShellExecute = true,
-                    Verb = "runas"
-                });
-                AppendLog("注入器已启动！注入后请查看游戏目录 gm_tool.log 是否出现 Ready 和 CAPTURED L。");
-                UpdateStatus();
+                    string content = File.ReadAllText(logPath);
+                    if (content.Contains("Ready. Mode:") && content.Contains("CAPTURED L="))
+                    {
+                        AppendLog("[诊断] 初始化成功！Ready 和 CAPTURED L 已出现。");
+                        return;
+                    }
+                    // 显示日志内容帮助诊断
+                    string[] lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    int showLines = Math.Min(lines.Length, 15);
+                    AppendLog("[诊断] 日志文件存在但未完成初始化，最近 " + showLines + " 行:");
+                    for (int i = Math.Max(0, lines.Length - showLines); i < lines.Length; i++)
+                        AppendLog("  " + lines[i]);
+                    if (content.Contains("ERROR: entry points not found"))
+                        AppendLog("[诊断] 签名扫描失败，游戏可能已更新，需要更新特征码。");
+                    else if (content.Contains("Signature not found"))
+                        AppendLog("[诊断] 部分签名未找到，检查日志中的签名扫描结果。");
+                    else if (!content.Contains("CAPTURED L="))
+                        AppendLog("[诊断] Hook已附加但未捕获到L指针，游戏可能未调用lua_pcall。尝试在游戏中操作触发Lua调用。");
+                }
+                else if (gameLogExists)
+                {
+                    AppendLog("[诊断] 日志在游戏目录而非工具目录！路径: " + gameLogPath);
+                    string content = File.ReadAllText(gameLogPath);
+                    string[] lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    int showLines = Math.Min(lines.Length, 10);
+                    for (int i = Math.Max(0, lines.Length - showLines); i < lines.Length; i++)
+                        AppendLog("  " + lines[i]);
+                }
+                else if (oldLogExists)
+                {
+                    AppendLog("[诊断] 旧默认日志存在(gm_tool.log)但随机化日志不存在，svc.cfg可能未被JS端读取。");
+                }
+                else
+                {
+                    AppendLog("[诊断] 未找到任何日志文件。可能原因:");
+                    AppendLog("  1. core.dll加载后Frida初始化失败（字符串替换可能破坏了内部功能）");
+                    AppendLog("  2. core.config或gm_payload.js路径无法访问");
+                    AppendLog("  3. 游戏反作弊阻止了Frida运行");
+                    AppendLog("  预期日志路径: " + (logPath ?? "(空)"));
+                    AppendLog("  svc.cfg存在: " + cfgExists);
+                    AppendLog("  ToolDir: " + ToolDir);
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show("注入器启动失败: " + ex.Message);
-                AppendLog("ERROR: " + ex.Message);
+                AppendLog("[诊断] 检查异常: " + ex.Message);
             }
         }
 
@@ -710,20 +1191,27 @@ namespace FridaGMTool
 # 自动Buff按钮
 AUTO = {30302, 30314, 107031, 1053070, 102400, 102401, 102402, 102404, 102450, 102451, 102452, 109014, 109015, 109016, 109920, 109921, 109922, 109923}
 #
+# 最小Buff按钮（少量核心ID，降低行为特征）
+# 30372 无敌(减90%真伤)  70063 满状态恢复  1053070 伤害提升
+MINIMAL = {30372, 70063, 1053070}
+#
 # 移除Buff按钮
 REMOVE = {108010, 380013, 70063, 70141}
 #
 # 攻击Buff按钮
-ATTACK = {102405, 102406, 102455, 102456, 109003, 109009, 109021, 109901, 109903, 109905, 109908, 109909, 109910, 109911, 109912, 109926, 102423, 102425, 109501, 109503, 109505, 109507, 109509, 109511, 70003, 70004, 109512}
+ATTACK = {1053026, 30302, 30314, 107031, 1053070, 102400, 102401, 102402, 102404, 102405, 102406, 102450, 102451, 102452, 102455, 102456, 109003, 109009, 109014, 109015, 109016, 109021, 109901, 109903, 109905, 109908, 109909, 109910, 109911, 109912, 109920, 109921, 109922, 109923, 109926, 102423, 102425, 109501, 109503, 109505, 109507, 109509, 109511, 70003, 70004, 109512}
 #
 # 防御Buff按钮
 DEFENSE = {30372, 30310, 70184, 200071, 200059, 200083, 200099, 200086, 30366, 30303, 30333, 30334, 30376, 30379, 30406, 102707, 70005, 102408, 102458, 102703, 102704, 200031}
+#
+# 循环防御Buff按钮
+LOOP_DEFENSE = {30372, 30310, 30333, 30334, 30376, 30379, 30406, 70005, 102703, 102704, 200031}
 #
 # 循环强力Buff按钮
 LOOP_STRONG = {1053027, 1053026, 109927, 200005, 70141, 70063, 109506, 30302, 30314, 107031, 1053070, 102404, 102454, 109914, 109917, 109923, 109515, 10532, 200035, 200036, 102400, 102401, 102402, 102450, 102451, 102452, 109014, 109015, 109016, 109920, 109921, 109922, 102407, 102457, 102408, 102458}
 #
 # 采集/拾取相关Buff
-GATHER = {104002, 104003, 104021, 104027, 104004, 104005, 104006, 104007, 104015, 104016, 104033, 104039, 104045, 104051, 104013, 104014, 104017, 104022, 104023, 104024, 104028, 104029, 104030, 104034, 104035, 104040, 104041, 104046, 104047, 104018, 104019, 104020, 104025, 104026, 104031, 104032, 104036, 104037, 104038, 104042, 104043, 104044, 104048, 104049, 104050}
+GATHER = {104002, 104025, 104027, 104031, 104033, 104036, 104037, 104038, 104039}
 #
 # 辅助/恢复/特殊状态
 AUX = {30005, 70110, 70025, 102701, 102702, 109602, 109603}
@@ -748,48 +1236,30 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
             string label = "攻击倍率x2";
             if (selected == "x4") { mode = "atk_mul_4"; label = "攻击倍率x4"; }
             else if (selected == "x8") { mode = "atk_mul_8"; label = "攻击倍率x8"; }
-            SendExperimentCommand(label, BuildLoopFeatureLua(mode));
+            SendExperimentCommand(label, BuildCombatExperimentLua(mode));
         }
 
         void ApplyDialogSpeedSelection()
         {
-            string selected = cmbDialogSpeed != null && cmbDialogSpeed.SelectedItem != null ? cmbDialogSpeed.SelectedItem.ToString() : "x20";
-            string mode = selected == "x80" ? "dialog_speed_80" : "dialog_speed_20";
-            string label = selected == "x80" ? "剧情速度x80" : "剧情速度x20";
+            string text = txtDialogSpeed != null ? txtDialogSpeed.Text.Trim() : "80";
+            double speed;
+            if (!double.TryParse(text, out speed) || speed <= 0) speed = 80;
+            string mode = "dialog_speed_" + speed.ToString("0.##");
+            string label = "剧情速度x" + speed.ToString("0.##");
             SendExperimentCommand(label, BuildLoopFeatureLua(mode));
         }
 
-        void FillOutfitCombo()
+        void ApplyAtkSpeedSelection()
         {
-            if (cmbOutfit == null) return;
-            cmbOutfit.Items.Clear();
-            for (int i = 0; i < OutfitIds.Length && i < OutfitNames.Length; i++)
-            {
-                cmbOutfit.Items.Add(OutfitIds[i].ToString() + " - " + OutfitNames[i]);
-            }
-            if (cmbOutfit.Items.Count > 0) cmbOutfit.SelectedIndex = 0;
-        }
-
-        void ApplyOutfitSelection()
-        {
-            int index = cmbOutfit != null ? cmbOutfit.SelectedIndex : -1;
-            if (index < 0 || index >= OutfitIds.Length || index >= OutfitNames.Length)
-            {
-                MessageBox.Show("请先选择换皮选项");
-                return;
-            }
-            string label = "衣服换皮 < " + OutfitNames[index] + " >";
-            SendExperimentCommand(label, BuildOutfitApplyLua(OutfitIds[index], OutfitNames[index]));
-        }
-
-        string ResolvePortableToolPath(string fileName, string fallbackDir, string legacyPath)
-        {
-            string portablePath = Path.Combine(Application.StartupPath, fileName);
-            if (File.Exists(portablePath)) return portablePath;
-            string fallbackPath = Path.Combine(fallbackDir, fileName);
-            if (File.Exists(fallbackPath)) return fallbackPath;
-            if (!string.IsNullOrEmpty(legacyPath) && File.Exists(legacyPath)) return legacyPath;
-            return portablePath;
+            string selected = cmbAtkSpeed != null && cmbAtkSpeed.SelectedItem != null ? cmbAtkSpeed.SelectedItem.ToString() : "x1.5";
+            string mode = "atk_speed_1.5";
+            string label = "攻击速度x1.5";
+            if (selected == "x3") { mode = "atk_speed_3"; label = "攻击速度x3"; }
+            else if (selected == "x5") { mode = "atk_speed_5"; label = "攻击速度x5"; }
+            else if (selected == "x7.5") { mode = "atk_speed_7.5"; label = "攻击速度x7.5"; }
+            else if (selected == "x10") { mode = "atk_speed_10"; label = "攻击速度x10"; }
+            else if (selected == "x30") { mode = "atk_speed_30"; label = "攻击速度x30"; }
+            SendExperimentCommand(label, BuildCombatExperimentLua(mode));
         }
 
         bool StartGameExecutable()
@@ -809,7 +1279,7 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
                 AppendLog("启动游戏: " + Path.Combine(gameBinPath, GameExeName));
                 if (!StartGameExecutable()) return;
                 gameLaunched = true;
-                AppendLog("游戏已启动！到角色选择界面后点[2.注入Frida]");
+                AppendLog("游戏已启动！到角色选择界面后点[2.注入]");
                 UpdateStatus();
             }
             catch (Exception ex) { MessageBox.Show("启动失败: " + ex.Message); AppendLog("ERROR: " + ex.Message); }
@@ -820,10 +1290,77 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
             if (!isReady) { MessageBox.Show("请先等待就绪！"); return; }
             try
             {
-                File.WriteAllText(CmdFile, luaCode);
-                AppendLog("发送: " + luaCode.Substring(0, Math.Min(60, luaCode.Length)) + (luaCode.Length > 60 ? "..." : ""));
+                // 优先写共享内存
+                bool mmfOk = WriteToSharedMemory(luaCode);
+                // 同时写文件作为降级备用（强制 UTF-8 无 BOM，避免平台默认 GBK 与 Frida 端 UTF-8 解码不一致）
+                File.WriteAllText(CmdFile, luaCode, new UTF8Encoding(false));
+                AppendLog("发送" + (mmfOk ? "(MMF)" : "(文件)") + ": " + luaCode.Substring(0, Math.Min(60, luaCode.Length)) + (luaCode.Length > 60 ? "..." : ""));
             }
             catch (Exception ex) { MessageBox.Show("发送失败: " + ex.Message); }
+        }
+
+        void EnsureSharedMemory()
+        {
+            try
+            {
+                if (mmf == null || mmfAccessor == null)
+                {
+                    mmf = MemoryMappedFile.CreateOrOpen(MMF_NAME, MMF_SIZE, MemoryMappedFileAccess.ReadWrite);
+                    mmfAccessor = mmf.CreateViewAccessor();
+                    AppendLog("共享内存已创建");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog("共享内存创建失败: " + ex.Message + " (将使用文件通信)");
+                mmf = null;
+                mmfAccessor = null;
+            }
+        }
+
+        bool WriteToSharedMemory(string luaCode)
+        {
+            try
+            {
+                if (mmf == null || mmfAccessor == null)
+                {
+                    mmf = MemoryMappedFile.CreateOrOpen(MMF_NAME, MMF_SIZE, MemoryMappedFileAccess.ReadWrite);
+                    mmfAccessor = mmf.CreateViewAccessor();
+                }
+                var bytes = Encoding.UTF8.GetBytes(luaCode);
+                if (bytes.Length > MMF_HALF_SIZE - 8) return false;
+                int newSeq = mmfSeq + 1;
+                // 防撕裂：先写 payload + len，最后才发布 seq
+                mmfAccessor.WriteArray(8, bytes, 0, bytes.Length);
+                mmfAccessor.Write(4, bytes.Length);
+                Thread.MemoryBarrier();
+                mmfAccessor.Write(0, newSeq);
+                mmfSeq = newSeq;
+                return true;
+            }
+            catch
+            {
+                mmf = null;
+                mmfAccessor = null;
+                return false;
+            }
+        }
+
+        string ReadResultFromSharedMemory()
+        {
+            try
+            {
+                if (mmfAccessor == null) return null;
+                int seq = mmfAccessor.ReadInt32(MMF_RESULT_OFFSET);
+                if (seq == mmfResultSeq) return null;
+                mmfResultSeq = seq;
+                int len = mmfAccessor.ReadInt32(MMF_RESULT_OFFSET + 4);
+                if (len <= 0 || len > MMF_HALF_SIZE - 8) return null;
+                var bytes = new byte[len];
+                mmfAccessor.ReadArray(MMF_RESULT_OFFSET + 8, bytes, 0, len);
+                return Encoding.UTF8.GetString(bytes);
+            }
+            catch { return null; }
         }
 
         void SendExperimentCommand(string name, string luaCode)
@@ -837,15 +1374,49 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
             AppendLog("实验功能已发送: " + name);
             var timer = new System.Windows.Forms.Timer { Interval = 1200 };
             int ticks = 0;
-            timer.Tick += (s, e) => {
+            EventHandler tickHandler = null;
+            tickHandler = (s, e) => {
                 ticks++;
-                ReadCommandResult(name);
-                if (ticks >= 5 || File.Exists(ToolResultFile) || File.Exists(ToolResultCompatFile))
+                bool finished = false;
+                try
                 {
-                    commandPending = false;
-                    timer.Stop();
+                    // 优先从共享内存读结果
+                    string mmfResult = ReadResultFromSharedMemory();
+                    if (mmfResult != null)
+                    {
+                        var lines = mmfResult.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var line in lines)
+                        {
+                            if (line.StartsWith("---")) continue;
+                            if (line.StartsWith("DONE") || line.StartsWith("LOAD_FAIL") || line.StartsWith("EXCEPTION") || line.StartsWith("RUNNING"))
+                                AppendLog(name + " 状态: " + line.Trim());
+                            else if (line.StartsWith("seq=") || line.StartsWith("loadbufferx=") || line.StartsWith("lua_call="))
+                                continue;
+                            else
+                                AppendLog("  " + line.Trim());
+                        }
+                        finished = true;
+                    }
+                    else
+                    {
+                        // 降级：从文件读结果
+                        ReadCommandResult(name);
+                        if (ticks >= 5 || File.Exists(ToolResultFile) || File.Exists(ToolResultCompatFile))
+                            finished = true;
+                    }
+                }
+                finally
+                {
+                    if (finished)
+                    {
+                        commandPending = false;
+                        timer.Stop();
+                        timer.Tick -= tickHandler;
+                        timer.Dispose();
+                    }
                 }
             };
+            timer.Tick += tickHandler;
             timer.Start();
         }
 
@@ -960,7 +1531,7 @@ __add('cn_menu_path', path)
         {
             string path = TestLuaMenuScript.Replace("\\", "/");
             string body = @"
-local path = '" + path + @"'
+local path = '" + EscapeLuaString(path) + @"'
 __add('test_menu_path', path)
 __try('test_menu_loadfile', function()
   local f, err = loadfile(path)
@@ -981,6 +1552,7 @@ end)
         {
             string buffConfigPath = BuffConfigFile.Replace("\\", "/");
             string body = @"
+local portable = _G.portable or portable or nil
 local function player()
   return type(G) == 'table' and G.main_player or nil
 end
@@ -991,7 +1563,12 @@ local function add_buff(id)
   return mp.add_buff(mp, id)
 end
 local function combat_action()
-  local ok, mod = pcall(require, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  local ok, mod
+  if _G.portable and _G.portable.import then
+    ok, mod = pcall(_G.portable.import, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+    if ok and mod then return mod end
+  end
+  ok, mod = pcall(require, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
   if ok and mod then return mod end
   return nil
 end
@@ -1144,50 +1721,63 @@ local function read_named_buff_list(label, fallback)
   end
   return fallback
 end
-local function apply_strong_buffs()
-  for _, id in ipairs(read_named_buff_list('LOOP_STRONG', {1053027,1053026,109927,200005,70141,70063,109506,30302,30314,107031,1053070,102404,102454,109914,109917,109923,109515,10532,200035,200036,102400,102401,102402,102450,102451,102452,109014,109015,109016,109920,109921,109922,102407,102457,102408,102458})) do
-    __try('loop.add_buff_' .. tostring(id), function() return add_buff(id) end)
+local function delayed_add_buffs(tag, ids, minDelay, maxDelay)
+  local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene() or nil
+  if not scene then
+    for _, id in ipairs(ids) do __try(tag .. '.add_buff_' .. tostring(id), function() return add_buff(id) end) end
+    return
   end
+  local delay = 0
+  for i, id in ipairs(ids) do
+    delay = delay + minDelay + (maxDelay - minDelay) * math.random()
+    local function do_add() __try(tag .. '.add_buff_' .. tostring(id), function() return add_buff(id) end) end
+    scene:runAction(cc.Sequence:create({ cc.DelayTime:create(delay), cc.CallFunc:create(do_add) }))
+  end
+end
+local function apply_strong_buffs()
+  delayed_add_buffs('loop', read_named_buff_list('LOOP_STRONG', {1053027,1053026,109927,200005,70141,70063,109506,30302,30314,107031,1053070,102404,102454,109914,109917,109923,109515,10532,200035,200036,102400,102401,102402,102450,102451,102452,109014,109015,109016,109920,109921,109922,102407,102457,102408,102458}), 0.5, 2.0)
 end
 local function apply_defense_buffs()
-  for _, id in ipairs(read_named_buff_list('DEFENSE', {30372,30310,70184,200071,200059,200083,200099,200086,30366,30303,30333,30334,30376,30379,30406,102707,70005,102408,102458,200031})) do
-    __try('loop.def_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
+  delayed_add_buffs('def', read_named_buff_list('DEFENSE', {30372,30310,70184,200071,200059,200083,200099,200086,30366,30303,30333,30334,30376,30379,30406,102707,70005,102408,102458,102703,102704,200031}), 0.5, 2.0)
 end
-local function apply_auto_buffs()
-  for _, id in ipairs(read_named_buff_list('AUTO', {30302,30314,107031,1053070,102400,102401,102402,102404,102450,102451,102452,109014,109015,109016,109920,109921,109922,109923})) do
-    __try('auto.add_buff_' .. tostring(id), function() return add_buff(id) end)
+local function apply_loop_defense_buffs()
+  delayed_add_buffs('loop_def', read_named_buff_list('LOOP_DEFENSE', {30372,30310,30333,30334,30376,30379,30406,70005,102703,102704,200031}), 0.5, 2.0)
+end
+local function apply_minimal_buffs()
+  delayed_add_buffs('minimal', read_named_buff_list('MINIMAL', {30372,70063,1053070}), 0.5, 2.0)
+end
+local function apply_stealth_flags()
+  -- 递归遍历_G(限深度)强关客户端安全标志(ACSDK等)
+  local FLAGS = {
+    DISABLE_ACSDK = true, acsdk_info_has_inited = false,
+    DEBUG = false, ENABLE_DEBUG_PRINT = false,
+    ENABLE_FORCE_SHOW_GM = false, FORCE_OPEN_DEBUG_SHORTCUT = false,
+    GM_IS_OPEN_GUIDE = false, GM_USE_PUBLISH = false
+  }
+  local MAX_DEPTH = 8
+  local visited = setmetatable({}, { __mode = 'k' })
+  local changed = 0
+  local function walk(tbl, depth)
+    if depth >= MAX_DEPTH or visited[tbl] then return end
+    visited[tbl] = true
+    for k, v in next, tbl do
+      if type(k) == 'string' and FLAGS[k] ~= nil then
+        if pcall(function() rawset(tbl, k, FLAGS[k]) end) then changed = changed + 1 end
+      end
+      if type(v) == 'table' then walk(v, depth + 1) end
+    end
   end
+  __try('stealth_flags.walk', function() walk(_G, 0); return changed end)
+  __add('stealth_flags', 'changed', changed)
 end
 local function apply_gather_buffs()
-  for _, id in ipairs(read_named_buff_list('GATHER', {104002,104003,104021,104027,104004,104005,104006,104007,104015,104016,104033,104039,104045,104051,104013,104014,104017,104022,104023,104024,104028,104029,104030,104034,104035,104040,104041,104046,104047,104018,104019,104020,104025,104026,104031,104032,104036,104037,104038,104042,104043,104044,104048,104049,104050})) do
-    __try('gather.add_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
+  delayed_add_buffs('gather', read_named_buff_list('GATHER', {104002,104025,104027,104031,104033,104036,104037,104038,104039}), 0.5, 2.0)
 end
 local function apply_aux_buffs()
-  for _, id in ipairs(read_named_buff_list('AUX', {30005,70110,70025,102701,102702,102703,102704,109602,109603})) do
-    __try('aux.add_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
+  delayed_add_buffs('aux', read_named_buff_list('AUX', {30005,70110,70025,102701,102702,102703,102704,109602,109603}), 0.5, 2.0)
 end
 local function apply_unknown_buffs()
-  for _, id in ipairs(read_named_buff_list('UNKNOWN', {200102,107201,107202,107203,107204,70182,70183,70186,70187,200095,1053027,109927,200005,109506,70141,70063})) do
-    __try('unknown.add_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
-end
-local function apply_combat_skill_buffs()
-  for _, id in ipairs(read_named_buff_list('COMBAT_SKILL', {102502,102503,102505,102508,102705,102706,103007,103008,102605,102606,102607})) do
-    __try('combat_skill.add_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
-end
-local function apply_scroll_buffs()
-  for _, id in ipairs(read_named_buff_list('SCROLL', {109604,109605,109606,109607,109608,109609})) do
-    __try('scroll.add_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
-end
-local function apply_attr_buffs()
-  for _, id in ipairs(read_named_buff_list('ATTR', {104009,104010,104011,104012,104001,104004})) do
-    __try('attr.add_buff_' .. tostring(id), function() return add_buff(id) end)
-  end
+  delayed_add_buffs('unknown', read_named_buff_list('UNKNOWN', {200102,107201,107202,107203,107204,70182,70183,70186,70187,200095,1053027,109927,200005,109506,70141,70063}), 0.5, 2.0)
 end
 local function remove_named_buffs(tag, label, fallback)
   local removed = 0
@@ -1197,34 +1787,30 @@ local function remove_named_buffs(tag, label, fallback)
   __add(tag, 'removed', removed)
 end
 local function run_loot_once()
-  if type(_G.RunAutoLoot) == 'function' then return _G.RunAutoLoot() end
   local mp = player()
   if not mp then error('main_player missing') end
   __try('loot.collect_nearby_collections', function() if mp.ride_skill_collect_nearby_collections then return mp:ride_skill_collect_nearby_collections(5000) else error('missing') end end)
   __try('loot.kill_reward', function() if mp.ride_skill_find_nearest_kill_reward then local r = mp:ride_skill_find_nearest_kill_reward(5000); if r and mp.ride_skill_get_kill_reward then return mp:ride_skill_get_kill_reward(r) end else error('missing') end end)
 end
 local function run_recover_once()
-  __try('recover.buff_70141', function() return add_buff(70141) end)
-  __try('recover.buff_70063', function() return add_buff(70063) end)
-  __try('recover.buff_102410', function() return add_buff(102410) end)
-  __try('recover.buff_102460', function() return add_buff(102460) end)
+  delayed_add_buffs('recover', read_named_buff_list('RECOVER', {70141, 70063, 102410, 102460}), 0.5, 2.0)
 end
 local function stop_loop(name)
   local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene() or nil
-  local key = '__GM_TOOL_' .. name .. '_ACTION'
+  local key = '__SVC_' .. name .. '_ACTION'
   if scene and _G[key] then scene:stopAction(_G[key]) end
   _G[key] = nil
 end
 local function disable_loop(name)
   stop_loop(name)
-  _G['__GM_TOOL_' .. name .. '_ACTIVE'] = false
-  _G['__GM_TOOL_' .. name .. '_GEN'] = (_G['__GM_TOOL_' .. name .. '_GEN'] or 0) + 1
+  _G['__SVC_' .. name .. '_ACTIVE'] = false
+  _G['__SVC_' .. name .. '_GEN'] = (_G['__SVC_' .. name .. '_GEN'] or 0) + 1
   __add(name .. '_loop', 'disabled')
 end
 local function toggle_loop(name, delaySec, func)
-  local activeKey = '__GM_TOOL_' .. name .. '_ACTIVE'
-  local actionKey = '__GM_TOOL_' .. name .. '_ACTION'
-  local genKey = '__GM_TOOL_' .. name .. '_GEN'
+  local activeKey = '__SVC_' .. name .. '_ACTIVE'
+  local actionKey = '__SVC_' .. name .. '_ACTION'
+  local genKey = '__SVC_' .. name .. '_GEN'
   if _G[activeKey] then
     stop_loop(name)
     _G[activeKey] = false
@@ -1275,65 +1861,173 @@ local function clear_all_local_buffs(tag)
   end)
   return cleared
 end
+local function has_buff(id)
+  local mp = player()
+  if not mp then return false end
+  local ok, res
+  ok, res = pcall(function() if type(mp.has_buff) == 'function' then return mp:has_buff(id) end end)
+  if ok and res ~= nil then return res end
+  ok, res = pcall(function() if type(mp.has_buff) == 'function' then return mp.has_buff(mp, id) end end)
+  if ok and res ~= nil then return res end
+  ok, res = pcall(function() if type(mp.get_buff) == 'function' then return mp:get_buff(id) ~= nil end end)
+  if ok and res ~= nil then return res end
+  ok, res = pcall(function() if type(mp.get_buff) == 'function' then return mp.get_buff(mp, id) ~= nil end end)
+  if ok and res ~= nil then return res end
+  return true
+end
 local function remove_all_buff_sets()
   disable_loop('LOOP_BUFF')
   disable_loop('LOOP_DEFENSE')
+  disable_loop('LOOP_RECOVER')
+  disable_loop('LOOP_LOOT')
   clear_all_local_buffs('remove_all.preclear')
   local entries = {
-    { 'AUTO', {30302,30314,107031,1053070,102400,102401,102402,102404,102450,102451,102452,109014,109015,109016,109920,109921,109922,109923} },
     { 'REMOVE', {108010,380013,70063,70141} },
-    { 'ATTACK', {102405,102406,102455,102456,109003,109009,109021,109901,109903,109905,109908,109909,109910,109911,109912,109926,102423,102425,109501,109503,109505,109507,109509,109511,70003,70004,109512} },
-    { 'DEFENSE', {30372,30310,70184,200071,200059,200083,200099,200086,30366,30303,30333,30334,30376,30379,30406,102707,70005,102408,102458,102703,102704,200031} },
-    { 'LOOP_STRONG', {1053027,1053026,109927,200005,70141,70063,109506,30302,30314,107031,1053070,102404,102454,109914,109917,109923,109515,10532,200035,200036,102400,102401,102402,102450,102451,102452,109014,109015,109016,109920,109921,109922,102407,102457,102408,102458} },
-    { 'GATHER', {104002,104003,104021,104027,104004,104005,104006,104007,104015,104016,104033,104039,104045,104051,104013,104014,104017,104022,104023,104024,104028,104029,104030,104034,104035,104040,104041,104046,104047,104018,104019,104020,104025,104026,104031,104032,104036,104037,104038,104042,104043,104044,104048,104049,104050} },
+    { 'ATTACK', {1053026,30302,30314,107031,1053070,102400,102401,102402,102404,102405,102406,102450,102451,102452,102455,102456,109003,109009,109021,109901,109903,109905,109908,109909,109910,109911,109912,109923,109926,102423,102425,109501,109503,109505,109507,109509,109511,70003,70004,109512,102407,102457,102408,102458} },
+    { 'DEFENSE', {70184,200071,200059,200083,200099,200086,30366,102707,70005,102408,102458,102703,102704,200031} },
+    { 'LOOP_DEFENSE', {30372,30310,30303,30333,30334,30376,30379,30406} },
+    { 'LOOP_STRONG', {1053027,1053026,109927,200005,70141,70063,109506,30302,30314,107031,1053070,102404,102454,109914,109917,109923,109515,10532,200035,200036,102400,102401,102402,102450,102451,102452,109014,109015,109016,109920,109921,109922} },
+    { 'GATHER', {104002,104025,104027,104031,104033,104036,104037,104038,104039} },
     { 'AUX', {30005,70110,70025,102701,102702,109602,109603} },
     { 'UNKNOWN', {200102,107201,107202,107203,107204,70182,70183,70186,70187,200095,1053027,109927,200005,109506,70141,70063} },
-    { 'COMBAT_SKILL', {102502,102503,102505,102508,102705,102706,103007,103008,102605,102606,102607} },
-    { 'SCROLL', {109604,109605,109606,109607,109608,109609} },
-    { 'ATTR', {104009,104010,104011,104012,104001} }
+    { 'GOD', {70063,30372,70005} },
+    { 'INVIS', {108010} },
+    { 'ATK_MUL', {1053017,1053018,1053019} },
+    { 'RECOVER', {70141,70063,102410,102460} },
+    { 'NPC_DUMB', {380013} },
+    { 'SUPER_DODGE', {102703,102704} },
+    { 'MINIMAL', {30372,70063,1053070} }
   }
   local seen = {}
   local ids = {}
   local removed = 0
+  local skipped = 0
   for _, entry in ipairs(entries) do
     for _, id in ipairs(read_named_buff_list(entry[1], entry[2])) do
       if not seen[id] then seen[id] = true; table.insert(ids, id) end
     end
   end
-  for pass = 1, 2 do
-    for _, id in ipairs(ids) do
-      remove_buff_repeat('remove_all.pass' .. tostring(pass), id, 6)
-      if pass == 1 then removed = removed + 1 end
+  for _, id in ipairs(ids) do
+    if not has_buff(id) then
+      skipped = skipped + 1
+    else
+      remove_buff_repeat('remove_all.pass1', id, 3)
+      removed = removed + 1
+    end
+  end
+  for _, id in ipairs(ids) do
+    if has_buff(id) then
+      remove_buff_repeat('remove_all.pass2', id, 6)
     end
   end
   for _, id in ipairs({102404,102454,102401,102451,102402,102452,109014,109015,109016,109920,109921,109922,109923,102407,102457,102408,102458}) do
-    remove_buff_repeat('remove_all.stubborn', id, 20)
+    if has_buff(id) then
+      remove_buff_repeat('remove_all.stubborn', id, 20)
+    end
   end
   clear_all_local_buffs('remove_all.postclear')
-  __add('remove_all_buffs', 'removed', removed)
+  __add('remove_all_buffs', 'removed', removed, 'skipped', skipped, 'total_ids', #ids)
 end
-_G.LOOP_BUFF_ACTIVE = _G.__GM_TOOL_LOOP_BUFF_ACTIVE
-_G.LOOP_LOOT_ACTIVE = _G.__GM_TOOL_LOOP_LOOT_ACTIVE
-_G.LOOP_RECOVER_ACTIVE = _G.__GM_TOOL_LOOP_RECOVER_ACTIVE
+_G.LOOP_BUFF_ACTIVE = _G.__SVC_LOOP_BUFF_ACTIVE
+_G.LOOP_LOOT_ACTIVE = _G.__SVC_LOOP_LOOT_ACTIVE
+_G.LOOP_RECOVER_ACTIVE = _G.__SVC_LOOP_RECOVER_ACTIVE
 ";
             if (mode == "loop_buff") body += "\ntoggle_loop('LOOP_BUFF', 3.0, apply_strong_buffs)\n";
             else if (mode == "loop_loot") body += "\ntoggle_loop('LOOP_LOOT', 10.0, run_loot_once)\n";
+            else if (mode == "loot_once") body += "\nrun_loot_once()\n";
             else if (mode == "loop_recover") body += "\ntoggle_loop('LOOP_RECOVER', 5.0, run_recover_once)\n";
-            else if (mode == "loop_defense") body += "\ntoggle_loop('LOOP_DEFENSE', 5.0, apply_defense_buffs)\n";
-            else if (mode == "auto_buff") body += "\napply_auto_buffs()\n__add('auto_buff', 'applied')\n";
+            else if (mode == "loop_defense") body += "\ntoggle_loop('LOOP_DEFENSE', 5.0, apply_loop_defense_buffs)\n";
+            else if (mode == "minimal_buff") body += "\napply_minimal_buffs()\n__add('minimal_buff', 'applied')\n";
+            else if (mode == "stealth_flags") body += "\napply_stealth_flags()\n";
             else if (mode == "gather_buff") body += "\napply_gather_buffs()\n__add('gather_buff', 'applied_45_ids')\n";
             else if (mode == "aux_buff") body += "\napply_aux_buffs()\n__add('aux_buff', 'applied_9_ids')\n";
             else if (mode == "unknown_buff") body += "\napply_unknown_buffs()\n__add('unknown_buff', 'applied_16_ids')\n";
             else if (mode == "remove_all_buffs") body += "\nremove_all_buff_sets()\n";
-            else if (mode == "atk_mul_2") body += "\n__try('atk_mul.add_1053017', function() return add_buff(1053017) end)\n__add('atk_mul', 'x2_applied')\n";
-            else if (mode == "atk_mul_4") body += "\n__try('atk_mul.add_1053018', function() return add_buff(1053018) end)\n__add('atk_mul', 'x4_applied')\n";
-            else if (mode == "atk_mul_8") body += "\n__try('atk_mul.add_1053019', function() return add_buff(1053019) end)\n__add('atk_mul', 'x8_applied')\n";
-            else if (mode == "atk_mul_reset") body += "\nfor _, id in ipairs({1053017,1053018,1053019}) do __try('atk_mul.remove_' .. tostring(id), function() return remove_buff(id) end) end\n__add('atk_mul', 'reset_applied')\n";
-            else if (mode == "combat_skill") body += "\napply_combat_skill_buffs()\n__add('combat_skill', 'applied_11_ids')\n";
-            else if (mode == "scroll_buff") body += "\napply_scroll_buffs()\n__add('scroll_buff', 'applied_6_ids')\n";
-            else if (mode == "attr_buff") body += "\napply_attr_buffs()\n__add('attr_buff', 'applied_6_ids')\n";
-            else if (mode == "dialog_speed_20") body += "\nset_dialog_speed(20.0)\n";
-            else if (mode == "dialog_speed_80") body += "\nset_dialog_speed(80.0)\n";
+            else if (mode == "onehit_off") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+remove_buff_full('onehit_off', 400148)
+__add('onehit_off', 'done')
+";
+            else if (mode == "atk_mul_2") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+-- 保存原始函数（只保存一次）
+if not _G.__orig_do_direct_damage and type(mp.do_direct_damage) == 'function' then
+  _G.__orig_do_direct_damage = mp.do_direct_damage
+end
+if not _G.__orig_force_set_HP and type(mp.force_set_HP) == 'function' then
+  _G.__orig_force_set_HP = mp.force_set_HP
+end
+local mul = 2
+-- monkey-patch do_direct_damage
+if _G.__orig_do_direct_damage then
+  mp.do_direct_damage = function(self, amount, ...)
+    return _G.__orig_do_direct_damage(self, amount * mul, ...)
+  end
+  __add('atk_mul.do_direct_damage', 'patched_x' .. tostring(mul))
+else
+  __add('atk_mul.do_direct_damage', 'orig_missing')
+end
+_G.__atk_mul = mul
+__add('atk_mul', 'x' .. tostring(mul) .. '_applied')
+";
+            else if (mode == "atk_mul_4") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+if not _G.__orig_do_direct_damage and type(mp.do_direct_damage) == 'function' then
+  _G.__orig_do_direct_damage = mp.do_direct_damage
+end
+local mul = 4
+if _G.__orig_do_direct_damage then
+  mp.do_direct_damage = function(self, amount, ...)
+    return _G.__orig_do_direct_damage(self, amount * mul, ...)
+  end
+  __add('atk_mul.do_direct_damage', 'patched_x' .. tostring(mul))
+else
+  __add('atk_mul.do_direct_damage', 'orig_missing')
+end
+_G.__atk_mul = mul
+__add('atk_mul', 'x' .. tostring(mul) .. '_applied')
+";
+            else if (mode == "atk_mul_8") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+if not _G.__orig_do_direct_damage and type(mp.do_direct_damage) == 'function' then
+  _G.__orig_do_direct_damage = mp.do_direct_damage
+end
+local mul = 8
+if _G.__orig_do_direct_damage then
+  mp.do_direct_damage = function(self, amount, ...)
+    return _G.__orig_do_direct_damage(self, amount * mul, ...)
+  end
+  __add('atk_mul.do_direct_damage', 'patched_x' .. tostring(mul))
+else
+  __add('atk_mul.do_direct_damage', 'orig_missing')
+end
+_G.__atk_mul = mul
+__add('atk_mul', 'x' .. tostring(mul) .. '_applied')
+";
+            else if (mode == "atk_mul_reset") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+-- 还原原始函数
+if _G.__orig_do_direct_damage and type(_G.__orig_do_direct_damage) == 'function' then
+  mp.do_direct_damage = _G.__orig_do_direct_damage
+  _G.__orig_do_direct_damage = nil
+  __add('atk_mul_reset.do_direct_damage', 'restored')
+else
+  __add('atk_mul_reset.do_direct_damage', 'no_orig')
+end
+_G.__atk_mul = nil
+__add('atk_mul_reset', 'done')
+";
+            else if (mode.StartsWith("dialog_speed_") && mode != "dialog_speed_reset")
+            {
+                double spd;
+                if (double.TryParse(mode.Substring("dialog_speed_".Length), out spd))
+                    body += "\nset_dialog_speed(" + spd.ToString("0.0") + ")\n";
+            }
             else if (mode == "dialog_speed_reset") body += "\nset_dialog_speed(1.0)\n";
             return BuildLuaEnvelope("loop_feature_" + mode, body);
         }
@@ -1454,15 +2148,15 @@ run_auto_loot_plus()
             {
                 body += @"
 local function toggle_rhythm_game()
-  if _G.__GM_TOOL_RHYTHM_ACTIVE then
-    _G.__GM_TOOL_RHYTHM_ACTIVE = false
+  if _G.__SVC_RHYTHM_ACTIVE then
+    _G.__SVC_RHYTHM_ACTIVE = false
     local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene()
-    if scene and _G.__GM_TOOL_RHYTHM_ACTION then scene:stopAction(_G.__GM_TOOL_RHYTHM_ACTION) end
-    _G.__GM_TOOL_RHYTHM_ACTION = nil
+    if scene and _G.__SVC_RHYTHM_ACTION then scene:stopAction(_G.__SVC_RHYTHM_ACTION) end
+    _G.__SVC_RHYTHM_ACTION = nil
     __add('rhythm_game', 'stopped')
     return
   end
-  _G.__GM_TOOL_RHYTHM_ACTIVE = true
+  _G.__SVC_RHYTHM_ACTIVE = true
   local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene()
   if not scene then error('running scene missing') end
   local function auto_rhythm()
@@ -1475,7 +2169,7 @@ local function toggle_rhythm_game()
   end
   local action = cc.RepeatForever:create(cc.Sequence:create({cc.DelayTime:create(0.5), cc.CallFunc:create(function() pcall(auto_rhythm) end)}))
   scene:runAction(action)
-  _G.__GM_TOOL_RHYTHM_ACTION = action
+  _G.__SVC_RHYTHM_ACTION = action
   __add('rhythm_game', 'started')
 end
 toggle_rhythm_game()
@@ -1605,9 +2299,9 @@ local function apply_outfit(outfit, title)
   end
 end
 local function close_old()
-  if _G.__GM_TOOL_OUTFIT_PICKER then
-    pcall(function() _G.__GM_TOOL_OUTFIT_PICKER:removeFromParent() end)
-    _G.__GM_TOOL_OUTFIT_PICKER = nil
+  if _G.__SVC_OUTFIT_PICKER then
+    pcall(function() _G.__SVC_OUTFIT_PICKER:removeFromParent() end)
+    _G.__SVC_OUTFIT_PICKER = nil
   end
 end
 local function show_picker()
@@ -1618,7 +2312,7 @@ local function show_picker()
   local size = director:getVisibleSize()
   close_old()
   local width, height = 470, 790
-  local page = tonumber(_G.__GM_TOOL_OUTFIT_PAGE) or 1
+  local page = tonumber(_G.__SVC_OUTFIT_PAGE) or 1
   local perPage = 11
   local totalPages = math.max(1, math.ceil(#OUTFIT_LIST / perPage))
   if page < 1 then page = 1 end
@@ -1660,7 +2354,7 @@ local function show_picker()
       label:setColor(cc.c3b(220, 220, 220))
       item:addChild(label)
       item:addClickEventListener(function()
-        _G.__GM_TOOL_OUTFIT_SELECTED_INDEX = i
+        _G.__SVC_OUTFIT_SELECTED_INDEX = i
         apply_outfit(outfit, title)
       end)
       container:addChild(item)
@@ -1674,7 +2368,7 @@ local function show_picker()
   prevBtn:setTitleFontSize(24)
   prevBtn:setPosition(cc.p(width * 0.24, 35))
   prevBtn:addClickEventListener(function()
-    if page > 1 then page = page - 1; _G.__GM_TOOL_OUTFIT_PAGE = page; pageText:setString(tostring(page) .. '/' .. tostring(totalPages)); render() end
+    if page > 1 then page = page - 1; _G.__SVC_OUTFIT_PAGE = page; pageText:setString(tostring(page) .. '/' .. tostring(totalPages)); render() end
   end)
   layer:addChild(prevBtn)
   local nextBtn = ccui.Button:create()
@@ -1682,13 +2376,13 @@ local function show_picker()
   nextBtn:setTitleFontSize(24)
   nextBtn:setPosition(cc.p(width * 0.76, 35))
   nextBtn:addClickEventListener(function()
-    if page < totalPages then page = page + 1; _G.__GM_TOOL_OUTFIT_PAGE = page; pageText:setString(tostring(page) .. '/' .. tostring(totalPages)); render() end
+    if page < totalPages then page = page + 1; _G.__SVC_OUTFIT_PAGE = page; pageText:setString(tostring(page) .. '/' .. tostring(totalPages)); render() end
   end)
   layer:addChild(nextBtn)
   pageText:setString(tostring(page) .. '/' .. tostring(totalPages))
   render()
   scene:addChild(layer, 10001)
-  _G.__GM_TOOL_OUTFIT_PICKER = layer
+  _G.__SVC_OUTFIT_PICKER = layer
   __add('outfit.picker', 'shown', 'items=' .. tostring(#OUTFIT_LIST))
 end
 show_picker()
@@ -1758,7 +2452,7 @@ _G.RunRemoveBuffs = function()
   __add('yy_remove_buffs', 'ids=' .. tostring(#ids), 'removed=' .. tostring(removed))
 end
 ";
-            if (mode == "yy_remove_buffs") body += "\n_G.RunRemoveBuffs()\n";
+            if (mode == "yy_remove_buffs") body += "\nRunRemoveBuffs()\n";
             return BuildLuaEnvelope("yylaoliu_buff_tool_" + mode, body);
         }
 
@@ -1770,7 +2464,7 @@ local player = type(G) == 'table' and G.main_player or nil
 __add('player', type(player), player)
 local BUFF_CONFIG_PATH = '" + buffConfigPath + @"'
 local function LoadOriginalYyLaoLiuScript()
-  if _G.__GM_TOOL_YY_LOADED then
+  if _G.__SVC_YY_LOADED then
     __add('LoadOriginalYyLaoLiuScript', 'already_loaded')
   else
   __try('LoadOriginalYyLaoLiuScript', function()
@@ -1784,7 +2478,7 @@ local function LoadOriginalYyLaoLiuScript()
     if not fn then error('load original script failed: ' .. tostring(loadErr)) end
     local ok, runErr = pcall(fn)
     if not ok then error('run original script failed: ' .. tostring(runErr)) end
-    _G.__GM_TOOL_YY_LOADED = true
+    _G.__SVC_YY_LOADED = true
   end)
   end
   __add('original.RunKillNPC', type(_G.RunKillNPC), _G.RunKillNPC)
@@ -2012,14 +2706,35 @@ end
 local function apply_config_auto_buffs()
   local cfg = get_buff_config()
   if #cfg.auto == 0 then return false end
+  local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene() or nil
+  if not scene then
+    local applied = 0
+    for _, id in ipairs(cfg.auto) do
+      local note = cfg.note_map[id] or ''
+      __try('buff_config.auto.' .. tostring(id), function()
+        if player and type(player.add_buff) == 'function' then player.add_buff(player, id) else error('main_player.add_buff missing') end
+      end)
+      applied = applied + 1
+      if note ~= '' then __add('buff_config.auto.note', tostring(id), note) end
+    end
+    __add('buff_config.auto_applied', applied)
+    return applied > 0
+  end
   local applied = 0
+  local delay = 0
   for _, id in ipairs(cfg.auto) do
     local note = cfg.note_map[id] or ''
-    __try('buff_config.auto.' .. tostring(id), function()
-      if player and type(player.add_buff) == 'function' then player.add_buff(player, id) else error('main_player.add_buff missing') end
-    end)
+    local bid = id
+    local bnote = note
+    delay = delay + 0.5 + 1.5 * math.random()
+    local function do_add()
+      __try('buff_config.auto.' .. tostring(bid), function()
+        if player and type(player.add_buff) == 'function' then player.add_buff(player, bid) else error('main_player.add_buff missing') end
+      end)
+      if bnote ~= '' then __add('buff_config.auto.note', tostring(bid), bnote) end
+    end
+    scene:runAction(cc.Sequence:create({ cc.DelayTime:create(delay), cc.CallFunc:create(do_add) }))
     applied = applied + 1
-    if note ~= '' then __add('buff_config.auto.note', tostring(id), note) end
   end
   __add('buff_config.auto_applied', applied)
   return applied > 0
@@ -2051,15 +2766,37 @@ local function apply_config_permanent_buffs()
   end
   local duration = 10675199116730015
   local level = 5
+  local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene() or nil
+  if not scene then
+    local applied = 0
+    for _, id in ipairs(cfg.permanent) do
+      local note = cfg.note_map[id] or ''
+      local ok = pcall(function() action.add_buff(id, eid, duration, level, eid, 'gm_tool_cfg') end)
+      if not ok then
+        ok = pcall(function() action:add_buff(id, eid, duration, level, eid, 'gm_tool_cfg') end)
+      end
+      __add('buff_config.permanent.' .. tostring(id), ok and 'ok' or 'fail', note)
+      if ok then applied = applied + 1 end
+    end
+    __add('buff_config.permanent_applied', applied)
+    return applied > 0
+  end
   local applied = 0
+  local delay = 0
   for _, id in ipairs(cfg.permanent) do
     local note = cfg.note_map[id] or ''
-    local ok = pcall(function() action.add_buff(id, eid, duration, level, eid, 'gm_tool_cfg') end)
-    if not ok then
-      ok = pcall(function() action:add_buff(id, eid, duration, level, eid, 'gm_tool_cfg') end)
+    local bid = id
+    local bnote = note
+    delay = delay + 0.5 + 1.5 * math.random()
+    local function do_add()
+      local ok = pcall(function() action.add_buff(bid, eid, duration, level, eid, 'gm_tool_cfg') end)
+      if not ok then
+        ok = pcall(function() action:add_buff(bid, eid, duration, level, eid, 'gm_tool_cfg') end)
+      end
+      __add('buff_config.permanent.' .. tostring(bid), ok and 'ok' or 'fail', bnote)
     end
-    __add('buff_config.permanent.' .. tostring(id), ok and 'ok' or 'fail', note)
-    if ok then applied = applied + 1 end
+    scene:runAction(cc.Sequence:create({ cc.DelayTime:create(delay), cc.CallFunc:create(do_add) }))
+    applied = applied + 1
   end
   __add('buff_config.permanent_applied', applied)
   return applied > 0
@@ -2117,8 +2854,9 @@ function RunRecover()
     __try('recover_hp', function() if action.recover_hp then action.recover_hp(1) else error('missing') end end)
     __try('fullfill_all_combat_res', function() if action.fullfill_all_combat_res then action.fullfill_all_combat_res(1) else error('missing') end end)
   end
-  mp_add_buff(70141)
-  mp_add_buff(70063)
+  for _, id in ipairs(read_named_buff_list('RECOVER', {70141, 70063})) do
+    mp_add_buff(id)
+  end
 end
 function RunAutoLoot()
   __try('ride_collect', function() if player and player.ride_skill_collect_nearby_collections then player:ride_skill_collect_nearby_collections(5000) else error('missing') end end)
@@ -2126,12 +2864,15 @@ function RunAutoLoot()
   __try('drop_manager', function() local dm = rawget(_G, 'DropManager'); if dm and dm.get_nearby_drop_entities then local drops = dm.get_nearby_drop_entities(5000) or {}; for _, eid in ipairs(drops) do pcall(function() player:pick_drop_item(eid) end); pcall(function() player:pick_reward_item(eid) end) end else error('missing') end end)
 end
 function RunNpcDumb()
-  mp_add_buff(380013)
+  for _, id in ipairs(read_named_buff_list('NPC_DUMB', {380013})) do
+    mp_add_buff(id)
+  end
   __try('toggle_npc_ai', function() if type(toggle_npc_ai) == 'function' then toggle_npc_ai() else error('missing') end end)
 end
 function RunSuperDodge()
-  mp_add_buff(102703)
-  mp_add_buff(102704)
+  for _, id in ipairs(read_named_buff_list('SUPER_DODGE', {102703, 102704})) do
+    mp_add_buff(id)
+  end
 end
 function RunWeaponGuise()
   __try('weapon_guise_panel', function()
@@ -2145,7 +2886,7 @@ function RunWeaponGuise()
   end)
 end
 function RunAutoBuff()
-  for _, id in ipairs({30302,30314,107031,1053070,102400,102401,102402,102404,102405,102406,102423,102425,102450,102451,102452,102454,102455,102456,109003,109009,109014,109015,109016,109021,109501,109503,109505,109507,109509,109511,109515,109901,109903,109905,109908,109909,109910,109911,109912,109914,109917,109920,109921,109922,109923,109926}) do mp_add_buff(id) end
+  delayed_main_add_buffs('auto', {30302,30314,107031,1053070,102400,102401,102402,102404,102405,102406,102423,102425,102450,102451,102452,102454,102455,102456,109003,109009,109014,109015,109016,109021,109501,109503,109505,109507,109509,109511,109515,109901,109903,109905,109908,109909,109910,109911,109912,109914,109917,109920,109921,109922,109923,109926}, 0.5, 2.0)
 end
 function RunRemoveBuffs()
   local removed = 0
@@ -2154,14 +2895,30 @@ function RunRemoveBuffs()
   end
   __add('RunRemoveBuffs.removed', removed)
 end
+function RunPermanentBuffs()
+  local action = try_import('hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  if not action then __add('permbuffs', 'combat_train_action_missing'); return end
+  local buffs = read_named_buff_list('PERMANENT', {30372,70063,1053070,30310,30333,30334})
+  local added = 0
+  for _, id in ipairs(buffs) do
+    if mp_add_buff(id) then added = added + 1 end
+  end
+  __add('permbuffs.added', added)
+end
 function LogCurrentPosition()
   __try('log_position', function()
-    local pos = player and player.get_position and player:get_position() or player.position or player.pos
-    __add('position', type(pos), pos and pos.x, pos and pos.y, pos and pos.z)
+    local mp = type(G) == 'table' and G.main_player or nil
+    if not mp then error('main_player missing') end
+    local pos = mp.get_position and mp:get_position() or mp.position or mp.pos
+    if pos then
+      __add('坐标', string.format('%.1f, %.1f, %.1f', pos.x or 0, pos.y or 0, pos.z or 0))
+    else
+      __add('坐标', '无法获取位置')
+    end
   end)
 end
 function RunTeleportToCustom()
-  __add('custom_tp', 'needs coordinates from yylaoliucn custom file; not fully wired')
+  __add('custom_tp', '请使用界面上的坐标传送功能')
 end
 function RunTeleportRandom()
   __try('random_tp', function()
@@ -2171,18 +2928,18 @@ function RunTeleportRandom()
 end
 ";
             if (mode == "yy_load_script") body += "\nDiagnoseYyLaoLiuFunctions()\n";
-            else if (mode == "yy_autoloot") body += "\n__try('original.ToggleAutoLootLoop.call', function() if type(_G.ToggleAutoLootLoop) == 'function' then return _G.ToggleAutoLootLoop() elseif type(_G.RunAutoLoot) == 'function' then return _G.RunAutoLoot() else return RunAutoLoot() end end)\n";
-            else if (mode == "yy_npcdumb") body += "\n__try('original.GM_EnableNPCDUMB.call', function() if type(_G.GM_EnableNPCDUMB) == 'function' then return _G.GM_EnableNPCDUMB() else return RunNpcDumb() end end)\n";
-            else if (mode == "yy_recover") body += "\n__try('original.ToggleRecover.call', function() if type(_G.ToggleRecover) == 'function' then return _G.ToggleRecover() elseif type(_G.RunRecover) == 'function' then return _G.RunRecover() else return RunRecover() end end)\n";
-            else if (mode == "yy_superdodge") body += "\n__try('original.ToggleSuperDodge.call', function() if type(_G.ToggleSuperDodge) == 'function' then return _G.ToggleSuperDodge() elseif type(_G.RunSuperDodge) == 'function' then return _G.RunSuperDodge() else return RunSuperDodge() end end)\n";
-            else if (mode == "yy_weapon") body += "\n__try('original.RunWeaponGuise.call', function() if type(_G.RunWeaponGuise) == 'function' then return _G.RunWeaponGuise() else return RunWeaponGuise() end end)\n";
-            else if (mode == "yy_randomtp") body += "\n__try('original.SafeRunTeleportRandom.call', function() if type(_G.SafeRunTeleportRandom) == 'function' then return _G.SafeRunTeleportRandom() else return RunTeleportRandom() end end)\n";
-            else if (mode == "yy_logpos") body += "\n__try('original.LogCurrentPosition.call', function() if type(_G.LogCurrentPosition) == 'function' then return _G.LogCurrentPosition() else return LogCurrentPosition() end end)\n";
-            else if (mode == "yy_customtp") body += "\n__try('original.RunTeleportToCustom.call', function() if type(_G.RunTeleportToCustom) == 'function' then return _G.RunTeleportToCustom() else return RunTeleportToCustom() end end)\n";
-            else if (mode == "yy_removebuffs") body += "\n__try('buff_config.remove_or_original', function() if not apply_config_remove_buffs() then if type(_G.RunRemoveBuffs) == 'function' then return _G.RunRemoveBuffs() else return RunRemoveBuffs() end end end)\n";
-            else if (mode == "yy_autobuff") body += "\n__try('buff_config.auto_or_original', function() if not apply_config_auto_buffs() then if type(_G.ToggleAutoBuffLoop) == 'function' then return _G.ToggleAutoBuffLoop() elseif type(_G.ToggleCombatBuffLoop) == 'function' then return _G.ToggleCombatBuffLoop() elseif type(_G.RunAutoBuff) == 'function' then return _G.RunAutoBuff() else return RunAutoBuff() end end end)\n";
-            else if (mode == "yy_permbuffs") body += "\n__try('buff_config.permanent_or_original', function() if not apply_config_permanent_buffs() then if type(_G.RunPermanentBuffs) == 'function' then return _G.RunPermanentBuffs() else error('missing') end end end)\n";
-            else if (mode == "yy_disablelogs") body += "\n__try('original.DisableLogsAndChecks.call', function() if type(_G.DisableLogsAndChecks) == 'function' then return _G.DisableLogsAndChecks() else error('missing') end end)\n";
+            else if (mode == "yy_autoloot") body += "\nRunAutoLoot()\n";
+            else if (mode == "yy_npcdumb") body += "\nRunNpcDumb()\n";
+            else if (mode == "yy_npcdumb_off") body += "\n__try('npcdumb_off', function() if _G.GM_DisableNPCDUMB then _G.GM_DisableNPCDUMB() else __add('npcdumb_off', 'no_disable_func') end end)\n";
+            else if (mode == "yy_recover") body += "\nRunRecover()\n";
+            else if (mode == "yy_superdodge") body += "\nRunSuperDodge()\n";
+            else if (mode == "yy_weapon") body += "\nRunWeaponGuise()\n";
+            else if (mode == "yy_randomtp") body += "\nRunTeleportRandom()\n";
+            else if (mode == "yy_logpos") body += "\nLogCurrentPosition()\n";
+            else if (mode == "yy_customtp") body += "\nRunTeleportToCustom()\n";
+            else if (mode == "yy_removebuffs") body += "\n__try('removebuffs', function() if not apply_config_remove_buffs() then return RunRemoveBuffs() end end)\n";
+            else if (mode == "yy_autobuff") body += "\n__try('autobuff', function() if not apply_config_auto_buffs() then return RunAutoBuff() end end)\n";
+            else if (mode == "yy_permbuffs") body += "\n__try('permbuffs', function() if not apply_config_permanent_buffs() then return RunPermanentBuffs() end end)\n";
             return BuildLuaEnvelope("yylaoliu_" + mode, body);
         }
 
@@ -2190,6 +2947,7 @@ end
         {
             string buffConfigPath = BuffConfigFile.Replace("\\", "/");
             string body = @"
+local portable = _G.portable or portable or nil
 local player = type(G) == 'table' and G.main_player or nil
 __add('player', type(player), player)
 local BUFF_CONFIG_PATH = '" + buffConfigPath + @"'
@@ -2235,12 +2993,23 @@ local function refresh_long_buff(buffNo, times)
   for i = 1, times do add_buff_long(buffNo) end
 end
 local function get_gm_action()
-  local ok, mod = pcall(require, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
-  if ok and mod then return mod end
+  local ok, mod
+  -- Step 1: portable.import
   if portable and portable.import then
     ok, mod = pcall(portable.import, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+    __add('gm_action.step1_portable', ok and type(mod) or 'fail:' .. tostring(mod))
     if ok and mod then return mod end
+  else
+    __add('gm_action.step1_portable', 'skipped_portable_nil')
   end
+  -- Step 2: package.loaded
+  ok, mod = pcall(function() return package.loaded['hexm.client.ui.windows.gm.gm_combat.combat_train_action'] end)
+  __add('gm_action.step2_pkgloaded', ok and type(mod) or 'fail:' .. tostring(mod))
+  if ok and mod then return mod end
+  -- Step 3: require
+  ok, mod = pcall(require, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  __add('gm_action.step3_require', ok and type(mod) or 'fail:' .. tostring(mod))
+  if ok and mod then return mod end
   return nil
 end
 local function call_gm_action(method, ...)
@@ -2259,8 +3028,22 @@ local function call_gm_action(method, ...)
   end)
 end
 local function get_gm_combat()
-  if type(_G.gm_combat) == 'table' then return _G.gm_combat end
-  if type(gm_combat) == 'table' then return gm_combat end
+  if type(_G.gm_combat) == 'table' then __add('gm_combat.step0_global', 'found'); return _G.gm_combat end
+  if type(gm_combat) == 'table' then __add('gm_combat.step0_local', 'found'); return gm_combat end
+  local ok, mod
+  if portable and portable.import then
+    ok, mod = pcall(portable.import, 'hexm.client.debug.gm.gm_commands.gm_combat')
+    __add('gm_combat.step1_portable', ok and type(mod) or 'fail:' .. tostring(mod))
+    if ok and mod then return mod end
+  else
+    __add('gm_combat.step1_portable', 'skipped_portable_nil')
+  end
+  ok, mod = pcall(function() return package.loaded['hexm.client.debug.gm.gm_commands.gm_combat'] end)
+  __add('gm_combat.step2_pkgloaded', ok and type(mod) or 'fail:' .. tostring(mod))
+  if ok and mod then return mod end
+  ok, mod = pcall(require, 'hexm.client.debug.gm.gm_commands.gm_combat')
+  __add('gm_combat.step3_require', ok and type(mod) or 'fail:' .. tostring(mod))
+  if ok and type(mod) == 'table' then return mod end
   return nil
 end
 local function call_gm_combat(method, ...)
@@ -2282,6 +3065,19 @@ local function main_add_buff(buffNo)
   __try('main_player.add_buff_' .. tostring(buffNo), function()
     if player and type(player.add_buff) == 'function' then player.add_buff(player, buffNo) else error('main_player.add_buff missing') end
   end)
+end
+local function delayed_main_add_buffs(tag, ids, minDelay, maxDelay)
+  local scene = cc and cc.Director and cc.Director:getInstance():getRunningScene() or nil
+  if not scene then
+    for _, id in ipairs(ids) do main_add_buff(id) end
+    return
+  end
+  local delay = 0
+  for i, id in ipairs(ids) do
+    delay = delay + minDelay + (maxDelay - minDelay) * math.random()
+    local function do_add() main_add_buff(id) end
+    scene:runAction(cc.Sequence:create({ cc.DelayTime:create(delay), cc.CallFunc:create(do_add) }))
+  end
 end
 local function main_remove_buff(buffNo)
   __try('main_player.remove_buff_' .. tostring(buffNo), function()
@@ -2423,15 +3219,88 @@ __try('require.buff_invincible', function() local m = require('hexm.common.comba
 __try('require.buff_misc', function() local m = require('hexm.common.misc.buff_misc'); __add('buff_misc', type(m), m) end)
 ";
             if (mode == "god") body += @"
-add_buff(70063)
-add_buff(30372)
-add_buff(70005)
+for _, id in ipairs(read_named_buff_list('GOD', {70063, 30372, 70005})) do
+  add_buff(id)
+end
+";
+            else if (mode == "super_dodge") body += @"
+for _, id in ipairs(read_named_buff_list('SUPER_DODGE', {102703, 102704})) do
+  add_buff(id)
+end
 ";
             else if (mode == "onehit") body += @"
-call_gm_action('set_niubility', 1)
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+__try('onehit.add_buff_400148', function() return mp:add_buff(400148) end)
+__try('onehit.add_buff_raw_400148', function() return mp.add_buff(mp, 400148) end)
+__add('onehit', 'applied_400148')
 ";
-            else if (mode == "onehit_off") body += @"
-call_gm_action('set_niubility', 0)
+            else if (mode == "atk_mul_2") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+if not _G.__orig_do_direct_damage and type(mp.do_direct_damage) == 'function' then
+  _G.__orig_do_direct_damage = mp.do_direct_damage
+end
+local mul = 2
+if _G.__orig_do_direct_damage then
+  mp.do_direct_damage = function(self, amount, ...)
+    return _G.__orig_do_direct_damage(self, amount * mul, ...)
+  end
+  __add('atk_mul.do_direct_damage', 'patched_x' .. tostring(mul))
+else
+  __add('atk_mul.do_direct_damage', 'orig_missing')
+end
+_G.__atk_mul = mul
+__add('atk_mul', 'x' .. tostring(mul) .. '_applied')
+";
+            else if (mode == "atk_mul_4") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+if not _G.__orig_do_direct_damage and type(mp.do_direct_damage) == 'function' then
+  _G.__orig_do_direct_damage = mp.do_direct_damage
+end
+local mul = 4
+if _G.__orig_do_direct_damage then
+  mp.do_direct_damage = function(self, amount, ...)
+    return _G.__orig_do_direct_damage(self, amount * mul, ...)
+  end
+  __add('atk_mul.do_direct_damage', 'patched_x' .. tostring(mul))
+else
+  __add('atk_mul.do_direct_damage', 'orig_missing')
+end
+_G.__atk_mul = mul
+__add('atk_mul', 'x' .. tostring(mul) .. '_applied')
+";
+            else if (mode == "atk_mul_8") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+if not _G.__orig_do_direct_damage and type(mp.do_direct_damage) == 'function' then
+  _G.__orig_do_direct_damage = mp.do_direct_damage
+end
+local mul = 8
+if _G.__orig_do_direct_damage then
+  mp.do_direct_damage = function(self, amount, ...)
+    return _G.__orig_do_direct_damage(self, amount * mul, ...)
+  end
+  __add('atk_mul.do_direct_damage', 'patched_x' .. tostring(mul))
+else
+  __add('atk_mul.do_direct_damage', 'orig_missing')
+end
+_G.__atk_mul = mul
+__add('atk_mul', 'x' .. tostring(mul) .. '_applied')
+";
+            else if (mode == "atk_mul_reset") body += @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then error('main_player missing') end
+if _G.__orig_do_direct_damage and type(_G.__orig_do_direct_damage) == 'function' then
+  mp.do_direct_damage = _G.__orig_do_direct_damage
+  _G.__orig_do_direct_damage = nil
+  __add('atk_mul_reset.do_direct_damage', 'restored')
+else
+  __add('atk_mul_reset.do_direct_damage', 'no_orig')
+end
+_G.__atk_mul = nil
+__add('atk_mul_reset', 'done')
 ";
             else if (mode == "target_onehit") body += @"
 target_onehit()
@@ -2468,13 +3337,31 @@ call_gm_combat('gm_unlimited_dive_resource', false)
 call_gm_combat('gm_reset_combat_resource')
 ";
             else if (mode == "invis") body += @"
-add_buff(108010)
-main_add_buff(108010)
+for _, id in ipairs(read_named_buff_list('INVIS', {108010})) do
+  add_buff(id)
+  main_add_buff(id)
+end
 ";
             else if (mode == "invis_off") body += @"
-call_gm_action('rm_buff', 108010)
-remove_buff(108010)
-main_remove_buff(108010)
+for _, id in ipairs(read_named_buff_list('INVIS', {108010})) do
+  call_gm_action('rm_buff', id)
+  remove_buff(id)
+  main_remove_buff(id)
+end
+";
+            else if (mode == "god_off") body += @"
+for _, id in ipairs(read_named_buff_list('GOD', {70063, 30372, 70005})) do
+  call_gm_action('rm_buff', id)
+  remove_buff(id)
+  main_remove_buff(id)
+end
+";
+            else if (mode == "super_dodge_off") body += @"
+for _, id in ipairs(read_named_buff_list('SUPER_DODGE', {102703, 102704})) do
+  call_gm_action('rm_buff', id)
+  remove_buff(id)
+  main_remove_buff(id)
+end
 ";
             else if (mode == "speed3") body += @"
 set_speed(3, 30)
@@ -2496,6 +3383,55 @@ end
             else if (mode == "defbuff") body += @"
 for _, id in ipairs(read_named_buff_list('DEFENSE', {30372,30310,70184,200071,200059,200083,200099,200086,30366,30303,30333,30334,30376,30379,30406,102707,70005,102408,102458,102703,102704,200031})) do
   add_buff(id)
+end
+";
+            else if (mode == "cutscene_kill") body += @"
+__try('cutscene.clear_log', function()
+  local ok, gm_cutscene = pcall(require, 'hexm.client.debug.gm.gm_commands.gm_cutscene')
+  if ok and gm_cutscene then
+    if gm_cutscene.gm_cutscene_clear_log then pcall(gm_cutscene.gm_cutscene_clear_log) end
+    if gm_cutscene.gm_cutscene_debug_terminate then pcall(gm_cutscene.gm_cutscene_debug_terminate) end
+  end
+end)
+__add('cutscene_kill', 'done')
+";
+            else if (mode.StartsWith("atk_speed_")) body += @"
+local targetSpeed = " + mode.Replace("atk_speed_", "") + @"
+__add('portable', type(_G.portable), type(portable))
+local action = nil
+-- 与 Test.lua apply_new_gm_speed 一致：直接用 portable.import
+if _G.portable and _G.portable.import then
+  local ok, mod = pcall(_G.portable.import, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  __add('atk_speed.portable_import', ok and type(mod) or 'fail:' .. tostring(mod))
+  if ok and mod then action = mod end
+end
+if not action then
+  local ok, mod = pcall(require, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  __add('atk_speed.require', ok and type(mod) or 'fail:' .. tostring(mod))
+  if ok and mod then action = mod end
+end
+if action and type(action.set_game_speed) == 'function' then
+  pcall(action.set_game_speed, targetSpeed)
+  __add('atk_speed', 'applied', targetSpeed)
+else
+  __add('atk_speed', 'set_game_speed_missing')
+end
+";
+            else if (mode == "atk_speed_reset") body += @"
+local action = nil
+if _G.portable and _G.portable.import then
+  local ok, mod = pcall(_G.portable.import, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  if ok and mod then action = mod end
+end
+if not action then
+  local ok, mod = pcall(require, 'hexm.client.ui.windows.gm.gm_combat.combat_train_action')
+  if ok and mod then action = mod end
+end
+if action and type(action.set_game_speed) == 'function' then
+  pcall(action.set_game_speed, 1.0)
+  __add('atk_speed', 'reset')
+else
+  __add('atk_speed', 'set_game_speed_missing')
 end
 ";
             return BuildLuaEnvelope("combat_" + mode, body);
@@ -2548,8 +3484,10 @@ end
             Process[] procs = Process.GetProcessesByName("yysls");
             if (procs.Length == 0) { AppendLog("内存速度失败: 未找到游戏进程"); return; }
             Process proc = procs[0];
+            // 释放未使用的 Process 句柄
+            for (int i = 1; i < procs.Length; i++) { try { procs[i].Dispose(); } catch { } }
             IntPtr hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, proc.Id);
-            if (hProcess == IntPtr.Zero) { AppendLog("内存速度失败: 无法打开进程"); return; }
+            if (hProcess == IntPtr.Zero) { AppendLog("内存速度失败: 无法打开进程"); try { proc.Dispose(); } catch { } return; }
             try
             {
                 long moduleBase = proc.MainModule.BaseAddress.ToInt64();
@@ -2569,7 +3507,7 @@ end
                 AppendLog(reset ? "恢复速度完成，成功项: " + okCount : "内存加速完成，成功项: " + okCount);
             }
             catch (Exception ex) { AppendLog("内存速度异常: " + ex.Message); }
-            finally { CloseHandle(hProcess); }
+            finally { CloseHandle(hProcess); try { proc.Dispose(); } catch { } }
         }
 
         void UpdateStatus()
@@ -2579,17 +3517,20 @@ end
             Color color = Color.Blue;
             Process[] procs = Process.GetProcessesByName("yysls");
             bool gameRunning = procs.Length > 0;
+            try
+            {
+                if (string.IsNullOrEmpty(gameRootPath)) { status = "游戏未运行 - 请先设置目录"; color = Color.Gray; }
+                else if (!gameRunning && !gameLaunched) { status = "游戏未运行 - " + gameRootPath; color = Color.Gray; }
+                else if (!gameRunning && gameLaunched) { status = "游戏可能已退出"; color = Color.Red; gameLaunched = false; }
+                else if (isReady) { status = "已就绪 - 可以使用 GM 命令"; color = Color.Green; }
+                else if (File.Exists(Path.Combine(ToolDir, "core.config"))) { status = "工具文件已就位 - 注入后检查 gm_tool.log"; color = Color.Orange; }
+                else { status = "游戏运行中 - 点[注入]"; color = Color.Blue; }
 
-            if (string.IsNullOrEmpty(gameRootPath)) { status = "请先选择游戏目录"; color = Color.Gray; }
-            else if (!gameRunning && !gameLaunched) { status = "游戏未运行 - 按步骤操作"; color = Color.Gray; }
-            else if (!gameRunning && gameLaunched) { status = "游戏可能已退出"; color = Color.Red; gameLaunched = false; }
-            else if (isReady) { status = "已就绪 - 可以使用 GM 命令"; color = Color.Green; }
-            else if (!string.IsNullOrEmpty(gameBinPath) && File.Exists(Path.Combine(gameBinPath, "frida-gadget.config"))) { status = "方案B文件已就位 - 注入后检查 gm_tool.log"; color = Color.Orange; }
-            else { status = "游戏运行中 - 先点[复制文件]再注入Frida"; color = Color.Blue; }
-
-            lblStatus.Text = "状态: " + status;
-            lblStatus.ForeColor = color;
-            SetGMEnabled(isReady);
+                lblStatus.Text = "状态: " + status;
+                lblStatus.ForeColor = color;
+                SetGMEnabled(isReady);
+            }
+            finally { foreach (var p in procs) { try { p.Dispose(); } catch { } } }
         }
 
         void SetGMEnabled(bool enabled)
@@ -2669,8 +3610,12 @@ end
         {
             foreach (Control control in parent.Controls)
             {
+                // 初始标签页的按钮始终可点击
+                if (parent == tabInit || parent == grpGM && control == tabInit) continue;
                 Button button = control as Button;
                 if (button != null && (button.Tag as string) != "nav") button.Enabled = enabled;
+                CheckBox chk = control as CheckBox;
+                if (chk != null) chk.Enabled = enabled;
                 ComboBox combo = control as ComboBox;
                 if (combo != null) combo.Enabled = enabled;
                 if (control.HasChildren) SetButtonsEnabled(control, enabled);
@@ -2688,14 +3633,22 @@ end
         {
             try
             {
-                string gameLogPath = GetGameFilePath("gm_tool.log");
+                // 优先检查随机化日志文件，其次检查默认名
+                string gameLogPath = GetGameFilePath(Path.GetFileName(UnifiedLogFile));
                 string activeLogPath = GetPreferredExistingPath(gameLogPath, UnifiedLogFile);
+                // 也检查旧默认名
+                if (string.IsNullOrEmpty(activeLogPath) || !File.Exists(activeLogPath))
+                {
+                    string oldLogPath = GetGameFilePath("gm_tool.log");
+                    activeLogPath = GetPreferredExistingPath(oldLogPath, Path.Combine(ToolDir, "gm_tool.log"));
+                }
                 if (string.IsNullOrEmpty(activeLogPath) || !File.Exists(activeLogPath)) return false;
                 string text = File.ReadAllText(activeLogPath);
                 if (string.IsNullOrEmpty(text)) return false;
                 bool readyLogged =
                     text.Contains("Ready. Command direct executor is polling:") ||
-                    text.Contains("Ready file created:");
+                    text.Contains("Ready file created:") ||
+                    text.Contains("Ready. Mode:");
                 bool capturedState =
                     text.Contains("CAPTURED L=") ||
                     text.Contains("CMD source:");
@@ -2762,14 +3715,20 @@ end
 
         string BuildUnifiedLogSnapshot()
         {
-            string gameLogPath = GetGameFilePath("gm_tool.log");
+            string gameLogPath = GetGameFilePath(Path.GetFileName(UnifiedLogFile));
             string activeLogPath = GetPreferredExistingPath(gameLogPath, UnifiedLogFile);
+            // 也检查旧默认名
+            if (string.IsNullOrEmpty(activeLogPath) || !File.Exists(activeLogPath))
+            {
+                string oldLogPath = GetGameFilePath("gm_tool.log");
+                activeLogPath = GetPreferredExistingPath(oldLogPath, Path.Combine(ToolDir, "gm_tool.log"));
+            }
             return File.Exists(activeLogPath) ? activeLogPath : "";
         }
 
         void ClearManagedFiles()
         {
-            string[] paths = new string[] { CmdFile, CmdResultFile, ToolResultFile, ToolResultCompatFile, UnifiedLogFile, Path.Combine(ToolDir, "frida_ready.txt"), Path.Combine(ToolDir, "frida_log.txt"), Path.Combine(ToolDir, "connector_log.txt"), Path.Combine(ToolDir, "gm_tool_ui.log"), Path.Combine(ToolDir, "gm_tool_all.log") };
+            string[] paths = new string[] { CmdFile, CmdResultFile, ToolResultFile, ToolResultCompatFile, UnifiedLogFile, Path.Combine(ToolDir, "ready.txt"), Path.Combine(ToolDir, "trace.txt"), Path.Combine(ToolDir, "connector_log.txt"), Path.Combine(ToolDir, "gm_tool_ui.log"), Path.Combine(ToolDir, "gm_tool_all.log"), Path.Combine(ToolDir, "gm_signal.txt"), Path.Combine(ToolDir, "svc.cfg") };
             foreach (string path in paths)
             {
                 try
@@ -2807,8 +3766,10 @@ end
                     if (!string.IsNullOrEmpty(path))
                     {
                         string binPath = Path.Combine(path, GameSubPath);
+                        if (!File.Exists(Path.Combine(binPath, GameExeName)))
+                            binPath = Path.Combine(path, GameSubPathAlt);
                         if (File.Exists(Path.Combine(binPath, GameExeName)))
-                        { gameRootPath = path; gameBinPath = binPath; UpdatePathLabel(); UpdateCommPaths(); }
+                        { gameRootPath = path; gameBinPath = binPath; UpdateCommPaths(); }
                     }
                 }
             }
@@ -2826,23 +3787,264 @@ end
                 SyncReadyState(!wasReady);
                 if (!wasReady && isReady) UpdateStatus();
                 UpdateLogView();
-                if (gameLaunched && Process.GetProcessesByName("yysls").Length == 0)
-                { gameLaunched = false; isReady = false; UpdateStatus(); }
+                if (gameLaunched)
+                {
+                    var ps = Process.GetProcessesByName("yysls");
+                    bool none = ps.Length == 0;
+                    try { foreach (var p in ps) p.Dispose(); } catch { }
+                    if (none) { gameLaunched = false; isReady = false; UpdateStatus(); }
+                }
             };
             timer.Start();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            try { ClearManagedFiles(); } catch { }
+            try { if (mmfAccessor != null) mmfAccessor.Dispose(); } catch { }
+            try { if (mmf != null) mmf.Dispose(); } catch { }
             base.OnFormClosing(e);
         }
 
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+
+            string exeDir = Path.GetDirectoryName(Application.ExecutablePath);
+            string gadgetPath = Path.Combine(exeDir, "core.dll");
+            string deployedMarker = Application.ExecutablePath + ".deployed";
+            bool isRunArg = args.Length > 0 && args[0] == "--run";
+
+            if (!File.Exists(gadgetPath) && IsPackedExe())
+            {
+                if (PerformAntiDetectDeployment()) return;
+            }
+            else if (File.Exists(deployedMarker) && !File.Exists(gadgetPath))
+            {
+                string deployedExe = File.ReadAllText(deployedMarker).Trim();
+                if (File.Exists(deployedExe))
+                {
+                    string deployDir = Path.GetDirectoryName(deployedExe);
+                    MessageBox.Show("已部署到：\n" + deployDir + "\n\n请使用桌面快捷方式运行。", "已部署", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                try { File.Delete(deployedMarker); } catch { }
+                if (PerformAntiDetectDeployment()) return;
+            }
+            else if (File.Exists(gadgetPath) && !isRunArg)
+            {
+                SpawnRandomCopyAndExit();
+                return;
+            }
+
             Application.Run(new GMForm());
+        }
+
+        static string GenerateSystemLikeExeName(Random rnd)
+        {
+            string[] prefixes = { "Win", "Sys", "Net", "Service", "Session", "Task", "Audio", "Print", "Policy", "Credential", "Desktop", "Update", "Storage", "Index", "Time", "Remote", "Local", "Global", "Shell", "Microsoft" };
+            string[] suffixes = { "Host", "Service", "Agent", "Worker", "Manager", "Broker", "Provider", "Helper", "Support", "Runtime", "Session", "Task", "Client", "Server", "Shell", "Config" };
+            string name = prefixes[rnd.Next(prefixes.Length)] + suffixes[rnd.Next(suffixes.Length)];
+            if (rnd.Next(3) == 0) name += rnd.Next(10, 999).ToString();
+            return name + ".exe";
+        }
+
+        static void SpawnRandomCopyAndExit()
+        {
+            try
+            {
+                string currentExe = Application.ExecutablePath;
+                string deployDir = Path.GetDirectoryName(currentExe);
+                string randomExeName = GenerateSystemLikeExeName(new Random());
+                string randomExePath = Path.Combine(deployDir, randomExeName);
+
+                foreach (string file in Directory.GetFiles(deployDir, "*.exe"))
+                {
+                    string name = Path.GetFileName(file);
+                    if (name.Equals(Path.GetFileName(currentExe), StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.Equals(randomExeName, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.Contains(" ") || name.Contains("Extreme") || name.Contains("Inject")) continue;
+                    try { File.Delete(file); } catch { }
+                }
+
+                File.Copy(currentExe, randomExePath, true);
+
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = randomExePath,
+                    Arguments = "--run",
+                    WorkingDirectory = deployDir,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("启动随机副本失败: " + ex.Message);
+            }
+        }
+
+        static string GenerateDeployRootPath()
+        {
+            string rootDrive = Directory.Exists("D:\\") ? "D:\\" : "C:\\";
+            // 伪装成 Windows IE/Edge 缓存目录结构，降低路径异常特征
+            string basePath = Path.Combine(rootDrive, "ProgramData", "Microsoft", "Windows", "INetCache", "IE", "Content.IE5");
+            Random rnd = new Random();
+            string folder = GenerateRandomHexName(rnd, 8);
+            string p = Path.Combine(basePath, folder);
+            Directory.CreateDirectory(p);
+            return p;
+        }
+
+        static string GenerateRandomHexName(Random rnd, int len)
+        {
+            const string hex = "0123456789ABCDEF";
+            StringBuilder sb = new StringBuilder(len);
+            for (int i = 0; i < len; i++) sb.Append(hex[rnd.Next(hex.Length)]);
+            return sb.ToString();
+        }
+
+        static bool IsPackedExe()
+        {
+            try
+            {
+                using (FileStream fs = new FileStream(Application.ExecutablePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    if (fs.Length < 14) return false;
+                    fs.Seek(-10, SeekOrigin.End);
+                    byte[] markerBytes = new byte[10];
+                    fs.Read(markerBytes, 0, 10);
+                    return Encoding.ASCII.GetString(markerBytes) == "SVCPACK___";
+                }
+            }
+            catch { return false; }
+        }
+
+        static bool ExtractPayload(string targetDir)
+        {
+            using (FileStream fs = new FileStream(Application.ExecutablePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                fs.Seek(-10, SeekOrigin.End);
+                byte[] markerBytes = new byte[10];
+                fs.Read(markerBytes, 0, 10);
+                if (Encoding.ASCII.GetString(markerBytes) != "SVCPACK___") return false;
+
+                fs.Seek(-14, SeekOrigin.End);
+                byte[] sizeBytes = new byte[4];
+                fs.Read(sizeBytes, 0, 4);
+                int payloadSize = BitConverter.ToInt32(sizeBytes, 0);
+
+                fs.Seek(-14 - payloadSize, SeekOrigin.End);
+                byte[] payload = new byte[payloadSize];
+                fs.Read(payload, 0, payloadSize);
+
+                int offset = 0;
+                int count = BitConverter.ToInt32(payload, offset); offset += 4;
+                for (int i = 0; i < count; i++)
+                {
+                    int nameLen = BitConverter.ToInt32(payload, offset); offset += 4;
+                    string name = Encoding.UTF8.GetString(payload, offset, nameLen); offset += nameLen;
+                    int fileLen = BitConverter.ToInt32(payload, offset); offset += 4;
+                    byte[] data = new byte[fileLen];
+                    Buffer.BlockCopy(payload, offset, data, 0, fileLen); offset += fileLen;
+                    string targetPath = Path.Combine(targetDir, name);
+                    Directory.CreateDirectory(Path.GetDirectoryName(targetPath));
+                    File.WriteAllBytes(targetPath, data);
+                }
+            }
+            return true;
+        }
+
+        static void CreateDesktopShortcut(string targetPath, string workingDir)
+        {
+            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            string shortcutPath = Path.Combine(desktop, "Windows系统服务.lnk");
+            Type t = Type.GetTypeFromProgID("WScript.Shell");
+            dynamic shell = Activator.CreateInstance(t);
+            dynamic shortcut = shell.CreateShortcut(shortcutPath);
+            shortcut.TargetPath = targetPath;
+            shortcut.WorkingDirectory = workingDir;
+            shortcut.Save();
+        }
+
+        static bool PerformAntiDetectDeployment()
+        {
+            string deployedMarker = Application.ExecutablePath + ".deployed";
+            bool isUpdate = false;
+            string existingExe = null;
+            string deployDir = null;
+
+            if (File.Exists(deployedMarker))
+            {
+                existingExe = File.ReadAllText(deployedMarker).Trim();
+                if (File.Exists(existingExe))
+                {
+                    deployDir = Path.GetDirectoryName(existingExe);
+                    if (MessageBox.Show("已部署到：\n" + deployDir + "\n\n是否覆盖更新？", "已部署", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                    {
+                        MessageBox.Show("请使用桌面快捷方式运行。", "已部署", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return true;
+                    }
+                    isUpdate = true;
+                }
+                try { File.Delete(deployedMarker); } catch { }
+            }
+
+            if (!isUpdate)
+            {
+                if (MessageBox.Show("首次运行，将执行安全部署：所有文件会随机放置到D盘5层目录，并创建桌面快捷方式。\n\n是否继续？", "安全部署", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                    return false;
+            }
+
+            try
+            {
+                if (string.IsNullOrEmpty(deployDir))
+                    deployDir = GenerateDeployRootPath();
+
+                if (Directory.Exists(deployDir))
+                {
+                    foreach (string file in Directory.GetFiles(deployDir, "*", SearchOption.AllDirectories))
+                    {
+                        try { File.Delete(file); } catch { }
+                    }
+                }
+
+                if (!ExtractPayload(deployDir))
+                {
+                    MessageBox.Show("无法从当前 exe 提取文件，可能不是单文件版。");
+                    return false;
+                }
+                EnsurePayloadToolDir(deployDir);
+
+                string extractedExe = Path.Combine(deployDir, "app.exe");
+                if (!File.Exists(extractedExe))
+                {
+                    MessageBox.Show("部署失败：未找到主程序文件");
+                    return false;
+                }
+
+                if (!string.IsNullOrEmpty(existingExe) && File.Exists(existingExe))
+                {
+                    try { File.Delete(existingExe); } catch { }
+                }
+
+                string randomExeName = GenerateSystemLikeExeName(new Random());
+                string deployedExe = Path.Combine(deployDir, randomExeName);
+                File.Move(extractedExe, deployedExe);
+
+                CreateDesktopShortcut(deployedExe, deployDir);
+                File.WriteAllText(deployedMarker, deployedExe, new UTF8Encoding(false));
+
+                string msg = isUpdate ? "覆盖更新完成！" : "部署完成！";
+                MessageBox.Show(msg + "\n所有文件已放置到：\n" + deployDir + "\n主程序已随机命名为：" + randomExeName + "\n桌面快捷方式已创建，请从桌面运行。", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("部署失败: " + ex.Message);
+                return false;
+            }
         }
     }
 }

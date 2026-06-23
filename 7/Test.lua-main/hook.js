@@ -49,7 +49,13 @@ const NULL_PTR = ptr(0);
 
 /* ========= Function resolution ========= */
 
-const mod  = Process.getModuleByName(MODULE);
+// 模块未加载时给可定位错误，而不是脚本静默崩溃
+const mod  = (function () {
+  try { return Process.getModuleByName(MODULE); }
+  catch (e) {
+    throw new Error("Target module " + MODULE + " not loaded yet (inject after game starts): " + e.message);
+  }
+})();
 const base = mod.base;
 
 function scan(sig, name) {
@@ -63,13 +69,17 @@ function scan(sig, name) {
   return addr;
 }
 
-const SIG_LUA_LOAD =
+// 官方版 + Steam 版 lua_load 双签名（参考 ysls 版）
+const SIG_LUA_LOAD_PRIMARY =
   "48 89 5C 24 10 56 48 83 EC 50 49 8B D9 48 8B F1 4D 8B C8 4C 8B C2 48 8D 54 24 20";
+const SIG_LUA_LOAD_FALLBACK =
+  "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 50 48 8B E9 49 8B F1";
 
 const SIG_LUA_PCALL =
   "48 89 74 24 18 57 48 83 EC 40 33 F6 48 89 6C 24 58 49 63 C1 41 8B E8 48 8B F9 45 85 C9";
 
-const lua_load_addr  = scan(SIG_LUA_LOAD,  "lua_load");
+let lua_load_addr  = scan(SIG_LUA_LOAD_PRIMARY,  "lua_load (primary)");
+if (!lua_load_addr) lua_load_addr = scan(SIG_LUA_LOAD_FALLBACK, "lua_load (fallback)");
 const lua_pcall_addr = scan(SIG_LUA_PCALL, "lua_pcall");
 
 if (!lua_load_addr || !lua_pcall_addr)
@@ -90,6 +100,9 @@ const lua_pcall = new NativeFunction(
 /* ========= C reader for lua_load ========= */
 /*
    struct LoadS { const char *s; size_t size; };
+
+   Lua 5.x 在 chunk 较大时会**多次**回调 reader，原写死 one-shot 在大脚本下会丢数据。
+   按 offset 切片消费：每次回调返回剩余字节起始指针 + 剩余长度，size 字段同时清零。
 */
 
 const luaReader = new NativeCallback(function (L, data, pSize) {
@@ -97,16 +110,16 @@ const luaReader = new NativeCallback(function (L, data, pSize) {
   const sPtr      = ls;                          // field s
   const sizeField = ls.add(Process.pointerSize); // field size
 
-  let remaining = readSize(sizeField);
-  if (remaining === 0) {
+  const remaining = readSize(sizeField);
+  if (remaining === 0 || (typeof remaining === 'object' && remaining.toString() === '0')) {
     writeSize(pSize, 0);
     return NULL_PTR;
   }
 
   writeSize(pSize, remaining);
-  writeSize(sizeField, 0); // one-shot
-
-  return sPtr.readPointer(); // const char* -> our buffer
+  // 把 size 字段推进到 0，下一次回调返回 EOF
+  writeSize(sizeField, 0);
+  return sPtr.readPointer();
 }, "pointer", ["pointer", "pointer", "pointer"]);
 
 /* ========= Lua loader buffer + reusable LoadS ========= */
@@ -183,7 +196,7 @@ Interceptor.attach(lua_pcall_addr, {
   }
 });
 
-/* ========= Hotkey: key '1' ========= */
+/* ========= Hotkey: key '1' (按下沿检测，避免 100ms 轮询丢键) ========= */
 
 (function setupHotkey() {
   const user32 = Module.load("user32.dll");
@@ -193,16 +206,19 @@ Interceptor.attach(lua_pcall_addr, {
     ["int"]
   );
 
+  let prevDown = false;
+  // 32ms ≈ 30Hz；用 0x8000 检测「按住」并自己求边沿，避免 LSB 被读光
   setInterval(() => {
-    if (GetAsyncKeyState(HOTKEY_VK) & 0x1) {
+    const down = (GetAsyncKeyState(HOTKEY_VK) & 0x8000) !== 0;
+    if (down && !prevDown) {
       console.log("[*] Key 1 detected → injection armed (next lua_pcall).");
       pendingInject = true;
     }
-  }, 100);
+    prevDown = down;
+  }, 32);
 })();
 
 console.log("[OK] Script loaded.");
 console.log("[OK] Press 1: on the next entry into lua_pcall,");
 console.log("     the game will do lua_load(mode=\"t\") + lua_pcall on a loader that does loadfile/pcall of:");
 console.log("     " + TEST_PATH);
-

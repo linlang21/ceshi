@@ -10,16 +10,16 @@ const MODULE = "yysls.exe"; // 目标进程模块名
 // 配置 & 热键定义
 // =================================================================================
  
-// 修饰键 Scrol_Lock
-const VK_MENU             = 0x91; 
- 
+// 修饰键 Scrol_Lock (VK_SCROLL = 0x91)
+const VK_SCROLL           = 0x91;
+
 // 系统热键
 const HOTKEY_F3           = 0x72; // F3: 注入菜单
 const HOTKEY_NUMPAD_MINUS = 0x6D; // 小键盘减号 : 切换菜单显示/隐藏
- 
-// 导航键（原生小键盘）
-const HOTKEY_NUMPAD8      = 0x80; // 上
-const HOTKEY_NUMPAD2      = 0x81; // 下
+
+// 导航键（原生小键盘，VK_NUMPAD0..9 = 0x60..0x69）
+const HOTKEY_NUMPAD8      = 0x68; // 上
+const HOTKEY_NUMPAD2      = 0x62; // 下
 const HOTKEY_NUMPAD4      = 0x64; // 左
 const HOTKEY_NUMPAD6      = 0x66; // 右
 const HOTKEY_NUMPAD5      = 0x65; // 确认
@@ -78,7 +78,13 @@ function readSize(ptr) {
 }
  
 const NULL_PTR = ptr(0); // 空指针
-const mod  = Process.getModuleByName(MODULE); // 获取目标模块
+const mod  = (function () {
+  // 模块未加载时不要抛异常退出，而是给出可定位错误
+  try { return Process.getModuleByName(MODULE); }
+  catch (e) {
+    throw new Error("目标模块 " + MODULE + " 未加载（请确认已注入到游戏进程）: " + e.message);
+  }
+})();
 const base = mod.base; // 模块基地址
  
 // 获取控制台宽度
@@ -283,7 +289,7 @@ try {
   console.log("[✔] 附加完成。热键和自动注入已启用。");
   logDivider();
  
-  startClearAndUpdateLoop(60000); // 每60秒更新一次控制台
+  printHeaderOnce(); // 仅首次打印；注入端 console 写 \x1b[2J 无意义，删除清屏循环
  
   /* =================================================================================
      注入逻辑
@@ -304,14 +310,20 @@ try {
     return sPtr.readPointer();
   }, "pointer", ["pointer", "pointer", "pointer"]);
  
-  // 分配脚本缓冲区
+  // 复用一块固定大小缓冲，避免每次注入都 Memory.alloc 导致驻留增长
+  const MAX_SCRIPT_BYTES = 64 * 1024; // 64 KiB，足够菜单加载器和命令字符串
+  const SCRIPT_BUF = Memory.alloc(MAX_SCRIPT_BYTES);
   function allocScriptBuffer(src) {
-    const buf = Memory.allocUtf8String(src);
+    // 写入前先截断，避免超长 src 越界
+    const truncated = src.length > MAX_SCRIPT_BYTES - 1
+      ? src.slice(0, MAX_SCRIPT_BYTES - 1)
+      : src;
+    SCRIPT_BUF.writeUtf8String(truncated);
     let len = 0;
-    while (buf.add(len).readU8() !== 0) len++;
-    return { buf, len };
+    while (len < MAX_SCRIPT_BYTES && SCRIPT_BUF.add(len).readU8() !== 0) len++;
+    return { buf: SCRIPT_BUF, len };
   }
- 
+
   const CHUNK_NAME = Memory.allocUtf8String("=(inject)"); // 代码块名称
   const MODE_TEXT  = Memory.allocUtf8String("t"); // 文本模式
   const LOADS      = Memory.alloc(Process.pointerSize * 2); // 加载缓冲区
@@ -412,47 +424,62 @@ try {
   (function setupHotkeys() {
     const user32 = Module.load("user32.dll"); // 加载user32.dll（窗口/输入相关）
     const GetAsyncKeyState = new NativeFunction(user32.getExportByName("GetAsyncKeyState"), "int16", ["int"]); // 检测按键状态
- 
-    // 每100ms检测一次按键
-    setInterval(() => {
-      // --- 始终生效的热键 ---
-      // F3仅允许排队一次，防止等待注入时重复排队
-      if (!menuInjected && !menuQueued && (GetAsyncKeyState(HOTKEY_F3) & 1)) {
-        trigger(LUA_LOAD_MENU, "注入菜单 (F3)");
-        menuQueued = true; // 标记为已排队，防止重复
-        if (LOG_KEY_EVENTS) logInfo("[热键] 按下F3 — 菜单加载器已排队。等待注入完成。");
-      } else if (menuInjected && (GetAsyncKeyState(HOTKEY_F3) & 1)) {
-        // 菜单已注入，忽略F3
-        if (LOG_KEY_EVENTS) logInfo("[热键] 按下F3但菜单已注入 — 忽略。请使用 [热键] 小键盘减号 : 显示/隐藏菜单");
-      } else if (!menuInjected && menuQueued && (GetAsyncKeyState(HOTKEY_F3) & 1)) {
-        // 菜单已排队，忽略重复F3
-        if (LOG_KEY_EVENTS) logInfo("[热键] 按下F3但加载器已排队 — 忽略重复。请使用 [热键] 小键盘减号 : 显示/隐藏菜单");
+
+    // 边沿检测状态：上一次轮询时按键是否处于按下状态
+    const prev = Object.create(null);
+
+    // 每帧仅调一次 GetAsyncKeyState 并缓存按下沿
+    function poll() {
+      const cur = Object.create(null);
+      const pressed = Object.create(null); // true 仅当本次轮询从未按下变为按下
+      // 一次性读取所有关心的键
+      function read(vk) {
+        const s = GetAsyncKeyState(vk);
+        const down = (s & 0x8000) !== 0;
+        cur[vk] = down;
+        pressed[vk] = down && !prev[vk];
+        return down;
       }
- 
-      // --- 检测修饰键 ---
-      const isAltDown = (GetAsyncKeyState(VK_MENU) & 0x8000) !== 0; // Scrol_Lock键是否按下
- 
-      if (isAltDown) {
-          // === Scrol_Lock + 快捷键 ===
-          if (GetAsyncKeyState(HOTKEY_NUMPAD1) & 1) trigger(CMD_TOGGLE_SPEED,     "切换移速 (Scrol_Lock+1)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD3) & 1) trigger(CMD_TOGGLE_ATTACK_SPEED, "切换攻击速度 (Scrol_Lock+3)"); // 新增：Scrol_Lock+小键盘3触发攻击速度
-          if (GetAsyncKeyState(HOTKEY_NUMPAD2) & 1) trigger(CMD_TOGGLE_LOOT_LOOP, "切换自动拾取循环 (Scrol_Lock+2)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD5) & 1) trigger(CMD_RUN_KILLNPC,      "击杀NPC (Scrol_Lock+5)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD7) & 1) trigger(CMD_RUN_RECOVER,      "恢复状态 (Scrol_Lock+7)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD9) & 1) trigger(CMD_RUN_AUTOLOOT,     "手动拾取 (Scrol_Lock+9)");
-          
+      [HOTKEY_F3, HOTKEY_NUMPAD_MINUS,
+       HOTKEY_NUMPAD1, HOTKEY_NUMPAD2, HOTKEY_NUMPAD3,
+       HOTKEY_NUMPAD4, HOTKEY_NUMPAD5, HOTKEY_NUMPAD6,
+       HOTKEY_NUMPAD7, HOTKEY_NUMPAD8, HOTKEY_NUMPAD9].forEach(read);
+      const isModDown = read(VK_SCROLL);
+
+      // F3：仅按下沿触发
+      if (pressed[HOTKEY_F3]) {
+        if (!menuInjected && !menuQueued) {
+          trigger(LUA_LOAD_MENU, "注入菜单 (F3)");
+          menuQueued = true;
+          if (LOG_KEY_EVENTS) logInfo("[热键] 按下F3 — 菜单加载器已排队。等待注入完成。");
+        } else if (LOG_KEY_EVENTS) {
+          logInfo("[热键] 按下F3但菜单已" + (menuInjected ? "注入" : "排队") + " — 忽略。");
+        }
+      }
+
+      if (isModDown) {
+        if (pressed[HOTKEY_NUMPAD1]) trigger(CMD_TOGGLE_SPEED,     "切换移速 (Scrol_Lock+1)");
+        if (pressed[HOTKEY_NUMPAD3]) trigger(CMD_TOGGLE_ATTACK_SPEED, "切换攻击速度 (Scrol_Lock+3)");
+        if (pressed[HOTKEY_NUMPAD2]) trigger(CMD_TOGGLE_LOOT_LOOP, "切换自动拾取循环 (Scrol_Lock+2)");
+        if (pressed[HOTKEY_NUMPAD5]) trigger(CMD_RUN_KILLNPC,      "击杀NPC (Scrol_Lock+5)");
+        if (pressed[HOTKEY_NUMPAD7]) trigger(CMD_RUN_RECOVER,      "恢复状态 (Scrol_Lock+7)");
+        if (pressed[HOTKEY_NUMPAD9]) trigger(CMD_RUN_AUTOLOOT,     "手动拾取 (Scrol_Lock+9)");
       } else {
-          // === 原生按键 ===
-          if (GetAsyncKeyState(HOTKEY_NUMPAD_MINUS) & 1) trigger(CMD_MENU_VISIBLE, "切换菜单显示/隐藏 (-)");
- 
-          // 导航键
-          if (GetAsyncKeyState(HOTKEY_NUMPAD8) & 1) trigger(CMD_NAV_UP,      "菜单上移 (8)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD2) & 1) trigger(CMD_NAV_DOWN,    "菜单下移 (2)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD4) & 1) trigger(CMD_NAV_LEFT,    "菜单左移 (4)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD6) & 1) trigger(CMD_NAV_RIGHT,   "菜单右移 (6)");
-          if (GetAsyncKeyState(HOTKEY_NUMPAD5) & 1) trigger(CMD_NAV_CONFIRM, "菜单确认 (5)");
+        if (pressed[HOTKEY_NUMPAD_MINUS]) trigger(CMD_MENU_VISIBLE, "切换菜单显示/隐藏 (-)");
+        if (pressed[HOTKEY_NUMPAD8]) trigger(CMD_NAV_UP,      "菜单上移 (8)");
+        if (pressed[HOTKEY_NUMPAD2]) trigger(CMD_NAV_DOWN,    "菜单下移 (2)");
+        if (pressed[HOTKEY_NUMPAD4]) trigger(CMD_NAV_LEFT,    "菜单左移 (4)");
+        if (pressed[HOTKEY_NUMPAD6]) trigger(CMD_NAV_RIGHT,   "菜单右移 (6)");
+        if (pressed[HOTKEY_NUMPAD5]) trigger(CMD_NAV_CONFIRM, "菜单确认 (5)");
       }
-    }, 100);
+
+      // 把 cur 拷贝到 prev
+      for (const k in prev) delete prev[k];
+      for (const k in cur) prev[k] = cur[k];
+    }
+
+    // 32ms ≈ 30Hz，覆盖人类按键节奏，丢键率显著低于 100ms
+    setInterval(poll, 32);
   })();
  
 } catch (e) {

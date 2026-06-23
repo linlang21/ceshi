@@ -36,6 +36,21 @@ node_modules/
 dump/
 analysis/
 
+# Tools (too large for repo)
+VMProtect3.9.4/
+ConfuserEx/
+samples_1-5_vmp_protected/
+__pycache__/
+
+# Runtime generated files
+*.deployed
+*.map
+*.vmp
+settings.xml
+
+# Assistant index
+.assistant/
+
 # Media files (optional - uncomment if needed)
 # *.mp4
 # *.avi
