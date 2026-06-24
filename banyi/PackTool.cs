@@ -7,10 +7,12 @@ using System.Threading;
 
 class PackTool
 {
-    static string SourceDir = @"E:\ceshi\7\FridaGM";
-    static string SourceCode = @"E:\ceshi\7\banyi\FridaGMTool.NetFx.cs";
-    static string StubExe = @"E:\ceshi\7\FridaGMTool_build.exe";
-    static string OutputExe = @"E:\ceshi\7\FridaGMTool_单文件版.exe";
+    static readonly string BaseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    static readonly string RootDir = Directory.GetParent(BaseDir) != null ? Directory.GetParent(BaseDir).FullName : BaseDir;
+    static string SourceDir = Path.Combine(BaseDir, "FridaGM");
+    static string SourceCode = Path.Combine(BaseDir, "FridaGMTool.NetFx.cs");
+    static string StubExe = Path.Combine(BaseDir, "FridaGMTool_build.exe");
+    static string OutputExe = Path.Combine(RootDir, "FridaGMTool_单文件版.exe");
     // 子进程超时（毫秒）：VMProtect / ConfuserEx 都可能长时间运行
     const int SUBPROC_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -101,6 +103,8 @@ class PackTool
                 continue;
             if (name.Equals("app.exe", StringComparison.OrdinalIgnoreCase) || name.Equals("app_protected.exe", StringComparison.OrdinalIgnoreCase))
                 continue;
+            if (name.StartsWith("app.exe.", StringComparison.OrdinalIgnoreCase) || name.StartsWith("app_protected.exe.", StringComparison.OrdinalIgnoreCase))
+                continue;
             // 排除 VMProtect 调试文件、项目文件和可执行文件（可执行文件只保留上面显式加入的 app.exe）
             if (name.EndsWith(".vmp", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -115,8 +119,19 @@ class PackTool
             // 排除开发文档（仅保留在源码目录）
             if (name.EndsWith("开发文档.md", StringComparison.OrdinalIgnoreCase))
                 continue;
+            // 排除说明文档与用户本地配置（不参与打包）
+            if (name.Equals("buff分类说明.md", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals("config.txt", StringComparison.OrdinalIgnoreCase))
+                continue;
             // 排除运行时残留文件（不应打包）
             if (name.Equals("gm_cmd_result.txt", StringComparison.OrdinalIgnoreCase) || name.Equals("gm_tool.log", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals("svc.cfg", StringComparison.OrdinalIgnoreCase) || name.Equals("ready.txt", StringComparison.OrdinalIgnoreCase) || name.Equals("trace.txt", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals("connector_log.txt", StringComparison.OrdinalIgnoreCase) || name.Equals("gm_tool_ui.log", StringComparison.OrdinalIgnoreCase) || name.Equals("gm_tool_all.log", StringComparison.OrdinalIgnoreCase) || name.Equals("gm_signal.txt", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.EndsWith(".deployed", StringComparison.OrdinalIgnoreCase))
                 continue;
             if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
                 continue;
@@ -233,13 +248,13 @@ class PackTool
     {
         // 自动调用 ConfuserEx 对主程序进行 .NET 混淆（如果已安装）
         string confuserPath = FindTool(new string[] {
-            @"E:\ceshi\ConfuserEx\Confuser.CLI.exe",
-            @"E:\ceshi\7\Confuser.CLI.exe",
+            Path.Combine(RootDir, "ConfuserEx", "Confuser.CLI.exe"),
+            Path.Combine(RootDir, "7", "Confuser.CLI.exe"),
             @"C:\Tools\ConfuserEx\Confuser.CLI.exe"
         });
         if (string.IsNullOrEmpty(confuserPath))
         {
-            Console.WriteLine("[提示] 未找到 ConfuserEx，主程序未混淆。如需混淆，请将 Confuser.CLI.exe 放到 E:\\ceshi\\7\\ 目录。");
+            Console.WriteLine("[提示] 未找到 ConfuserEx，主程序未混淆。如需混淆，请将 Confuser.CLI.exe 放到 " + RootDir + "\\ConfuserEx\\ 目录。");
             return;
         }
 
@@ -346,14 +361,15 @@ class PackTool
     {
         // 自动调用 UPX 压缩 core.dll（如果已安装）
         string upxPath = FindTool(new string[] {
-            @"E:\ceshi\7\upx.exe",
+            Path.Combine(RootDir, "upx", "upx-4.2.4-win32", "upx.exe"),
+            Path.Combine(RootDir, "upx.exe"),
             @"C:\Tools\upx.exe",
             @"C:\Program Files\UPX\upx.exe"
         });
         string dllPath = Path.Combine(SourceDir, "core.dll");
         if (string.IsNullOrEmpty(upxPath))
         {
-            Console.WriteLine("[提示] 未找到 UPX，core.dll 未加壳压缩。如需压缩，请将 upx.exe 放到 E:\\ceshi\\7\\ 目录。");
+            Console.WriteLine("[提示] 未找到 UPX，core.dll 未加壳压缩。如需压缩，请将 upx.exe 放到 " + RootDir + "\\upx\\ 目录。");
             return null;
         }
         if (!File.Exists(dllPath))
@@ -395,9 +411,9 @@ class PackTool
 
         // 自动调用 VMProtect 命令行（如果已安装 Ultimate 版）
         string vmprotectCon = FindTool(new string[] {
-            @"E:\ceshi\7\VMProtect3.9.4\VMProtect_Con.exe",
-            @"E:\ceshi\7\VMProtect\VMProtect_Con.exe",
-            @"E:\ceshi\7\VMProtect_Con.exe"
+            Path.Combine(RootDir, "VMProtect3.9.4", "VMProtect_Con.exe"),
+            Path.Combine(RootDir, "VMProtect", "VMProtect_Con.exe"),
+            Path.Combine(RootDir, "VMProtect_Con.exe")
         });
         string vmpProject = Path.Combine(SourceDir, "protect_app.vmp");
         string vmProtectedExe = Path.Combine(SourceDir, "app_protected.exe");

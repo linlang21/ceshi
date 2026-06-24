@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="FridaGMTool.cs" />
+    <Compile Include="FridaGMTool.NetFx.cs" />
   </ItemGroup>
 
   <ItemGroup>
