@@ -1,0 +1,36 @@
+{
+  "items": [
+    {
+      "id": "injection-flow",
+      "nodeId": "project-7-lua-injector",
+      "title": "Lua 注入流程",
+      "kind": "flowchart",
+      "summary": "从游戏启动到 Lua 脚本注入执行的完整技术链路",
+      "sourceRefs": [
+        "7/Where Winds Meet/README.md",
+        "7/Where Winds Meet  Lua Script/README.md"
+      ],
+      "relativePath": "diagrams/injection-flow.md",
+      "path": "E:\\ceshi\\.ccgui\\project-map\\ceshi-c30bbcfe\\diagrams\\injection-flow.md",
+      "content": "# Lua 注入流程\n\n从游戏启动到 Lua 脚本注入执行的完整技术链路\n\n## Sources\n\n- 7/Where Winds Meet/README.md\n- 7/Where Winds Meet  Lua Script/README.md\n\n```mermaid\ngraph TD\n    A[游戏启动 wwm.exe] --> B[加载 dinput8.dll 代理]\n    B --> C[加载 Frida Gadget.dll]\n    C --> D[Python Loader 连接 Frida]\n    D --> E[hook.js 注入]\n    E --> F[Hook lua_load/lua_pcall]\n    F --> G[注入自定义 Lua 脚本]\n    G --> H[GM 菜单功能生效]\n```\n",
+      "createdAt": "2026-06-24T01:09:34.817Z",
+      "updatedAt": "2026-06-24T01:09:34.817Z"
+    },
+    {
+      "id": "analysis-pipeline",
+      "nodeId": "project-6-aaa-analysis",
+      "title": "AAA.exe 分析流水线",
+      "kind": "flowchart",
+      "summary": "从辅助样本到偏移链提取的多阶段分析流程",
+      "sourceRefs": [
+        "6/analysis/使用说明.md",
+        "6/analysis/ApiMonitor_AAA.md"
+      ],
+      "relativePath": "diagrams/analysis-pipeline.md",
+      "path": "E:\\ceshi\\.ccgui\\project-map\\ceshi-c30bbcfe\\diagrams\\analysis-pipeline.md",
+      "content": "# AAA.exe 分析流水线\n\n从辅助样本到偏移链提取的多阶段分析流程\n\n## Sources\n\n- 6/analysis/使用说明.md\n- 6/analysis/ApiMonitor_AAA.md\n\n```mermaid\ngraph TD\n    A[AAA.exe 辅助样本] --> B[行为监控 Hook DLL]\n    A --> C[内存 Dump]\n    B --> D[API 调用日志分析]\n    C --> E[IAT/区域深度分析]\n    D --> F[偏移链模式识别]\n    E --> F\n    F --> G[偏移链验证器]\n    G --> H[综合辅助工具重建]\n```\n",
+      "createdAt": "2026-06-24T01:09:34.817Z",
+      "updatedAt": "2026-06-24T01:09:34.817Z"
+    }
+  ]
+}

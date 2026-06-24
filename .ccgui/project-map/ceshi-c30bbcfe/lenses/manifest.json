@@ -1,0 +1,232 @@
+{
+  "items": [
+    {
+      "id": "overview",
+      "title": "总览 Overview",
+      "shortTitle": "Overview",
+      "description": "项目总览 Project overview",
+      "status": "detected",
+      "confidence": "medium",
+      "evidence": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ]
+    },
+    {
+      "id": "architecture",
+      "title": "architecture",
+      "shortTitle": "architecture",
+      "description": "项目整体目录结构、模块划分、文件组织",
+      "status": "detected",
+      "confidence": "unknown",
+      "evidence": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ]
+    },
+    {
+      "id": "reverse-engineering",
+      "title": "reverse-engineering",
+      "shortTitle": "reverse-engineering",
+      "description": "针对目标游戏的逆向分析、偏移链提取、内存分析",
+      "status": "detected",
+      "confidence": "unknown",
+      "evidence": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ]
+    },
+    {
+      "id": "injection-tools",
+      "title": "injection-tools",
+      "shortTitle": "injection-tools",
+      "description": "DLL注入、Frida Hook、Lua脚本注入等工具链",
+      "status": "detected",
+      "confidence": "unknown",
+      "evidence": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ]
+    },
+    {
+      "id": "build-run",
+      "title": "build-run",
+      "shortTitle": "build-run",
+      "description": "编译方式、运行依赖、环境配置",
+      "status": "detected",
+      "confidence": "unknown",
+      "evidence": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ]
+    },
+    {
+      "id": "risk",
+      "title": "risk",
+      "shortTitle": "risk",
+      "description": "反作弊机制、VMP保护、检测风险",
+      "status": "detected",
+      "confidence": "unknown",
+      "evidence": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ]
+    }
+  ]
+}

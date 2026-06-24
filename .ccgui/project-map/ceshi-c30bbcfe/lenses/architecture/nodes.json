@@ -1,0 +1,139 @@
+{
+  "items": [
+    {
+      "id": "project-root",
+      "lensId": "architecture",
+      "nodeKind": "project",
+      "title": "ceshi — 燕云十六声逆向研究工作区",
+      "summary": "针对游戏《燕云十六声》(yysls.exe) 的逆向工程、Lua注入、辅助样本分析的研究型工作区",
+      "detail": {
+        "coreDescription": "工作区包含多个编号目录（6号、7号等），分别对应不同研究方向：6号为 AAA.exe 辅助样本的动态调试与偏移链提取，7号为国际服/国服 Lua 脚本注入 PoC，samples_1-5 为 VMP 保护的辅助样本集合。整体目标是理解游戏内部 Lua VM（hexm 引擎）并实现脚本注入。",
+        "keyFacts": [
+          "目标进程: yysls.exe (燕云十六声 PC 客户端)",
+          "引擎: hexm (自定义 Lua 5.4 VM)",
+          "国际服与国服共用 hexm 引擎代码库（拼音函数名 set_niubility 为证据）",
+          "全局基址偏移: yysls.exe + 0x07C04698",
+          "坐标偏移链: base+0x58 -> +0x0/+0x10 -> +0x340(X)/+0x348(Y)/+0x350(Z)"
+        ],
+        "keyLogic": [
+          "6号目录: AAA.exe 内存 Dump → C# 分析工具提取偏移链 → 验证坐标读写",
+          "7号目录: dinput8.dll 代理 + Frida Gadget → hook lua_load/lua_pcall → 注入自定义 Lua 脚本",
+          "samples_1-5: VMP 保护样本仅能通过 UIAutomation 提取功能名称，无实现代码"
+        ],
+        "riskSignals": [
+          "VMP 保护的样本静态分析完全失败（5个样本均无法提取代码）",
+          "游戏反作弊包含 VAD Tree 检测和 LoadLibrary Hook",
+          "偏移链在游戏版本更新后可能失效"
+        ],
+        "diagramArtifacts": [],
+        "relatedArtifacts": [
+          {
+            "type": "symbol",
+            "label": "7/"
+          },
+          {
+            "type": "symbol",
+            "label": "6/"
+          },
+          {
+            "type": "symbol",
+            "label": "samples_1-5_vmp_protected/"
+          },
+          {
+            "type": "symbol",
+            "label": "frida_net_test/"
+          }
+        ]
+      },
+      "children": [
+        "unassigned-discoveries",
+        "hexm-engine",
+        "yysls-offset-chain",
+        "anti-cheat-intel"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ],
+      "confidence": "high",
+      "stale": false,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      }
+    },
+    {
+      "id": "unassigned-discoveries",
+      "lensId": "architecture",
+      "nodeKind": "cross-cutting",
+      "title": "待整理发现 Unassigned Discoveries",
+      "summary": "尚未可靠归属到具体模块或能力的 Project Map 发现项。",
+      "detail": {
+        "coreDescription": "用于临时承载缺少可靠父节点的任务、风险、产物、测试或 workflow 发现。",
+        "keyFacts": [],
+        "keyLogic": [],
+        "riskSignals": [],
+        "relatedArtifacts": []
+      },
+      "parentId": "project-root",
+      "children": [
+        "frida-net-probe"
+      ],
+      "sources": [],
+      "confidence": "unknown",
+      "stale": true,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      },
+      "staleReasons": [
+        {
+          "id": "graph-repair:unassigned-discoveries:missing-evidence",
+          "kind": "unknown",
+          "label": "Node was quarantined because it has no evidence source",
+          "nodeId": "unassigned-discoveries",
+          "recommendation": "partial-refresh"
+        },
+        {
+          "id": "graph-repair:unassigned-discoveries:missing-evidence",
+          "kind": "unknown",
+          "label": "Node was quarantined because it has no evidence source",
+          "nodeId": "unassigned-discoveries",
+          "recommendation": "partial-refresh"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,249 @@
+{
+  "items": [
+    {
+      "id": "project-6-aaa-analysis",
+      "lensId": "reverse-engineering",
+      "nodeKind": "module",
+      "title": "6号 — AAA.exe 辅助样本动态分析",
+      "summary": "对4号辅助(AAA.exe)进行内存 Dump、偏移链提取、Hook 监控的分析工具集",
+      "detail": {
+        "coreDescription": "6号目录包含针对 AAA.exe 辅助工具的完整分析链：行为监控(Hook DLL)、内存 Dump 分析(C#)、偏移链验证器、综合辅助工具重建。已验证全局基址 yysls.exe+0x07C04698 和坐标偏移链 base+0x58→+0x0/+0x10→+0x340(X)/+0x348(Y)/+0x350(Z)。",
+        "keyFacts": [
+          "AAA_Hook.cpp: 拦截 ReadProcessMemory/WriteProcessMemory/VirtualAllocEx/VirtualProtectEx",
+          "AAABehaviorMonitor.cs: 自动检测进程启动、注入 Hook DLL、分析日志",
+          "AnalyzeV25.cs / AnalyzeV24: 内存 Dump 深度分析（IAT 解析、区域遍历）",
+          "YYSLS_Hack.cs: 基于 CT 表逆向的综合辅助工具（定怪/加速/去草/传送）",
+          "OffsetChainExplorer.cs: 暴力偏移链探索器"
+        ],
+        "keyLogic": [
+          "内存 Dump → 二进制分析 → 提取偏移链 → 验证坐标读写",
+          "API Hook → 记录读写地址模式 → 识别偏移验证/AOB 扫描行为",
+          "PE 分析: 312 个内存区域，.ChongZi 自定义节名（疑似壳特征）"
+        ],
+        "riskSignals": [
+          "AAA.exe 使用 VMProtect 保护（完整 VMP）",
+          "偏移链 0x07C04698 可能随游戏版本更新失效",
+          "进程注入可能触发游戏反作弊检测"
+        ],
+        "diagramArtifacts": [
+          {
+            "id": "analysis-pipeline",
+            "label": "AAA.exe 分析流水线",
+            "path": "E:\\ceshi\\.ccgui\\project-map\\ceshi-c30bbcfe\\diagrams\\analysis-pipeline.md",
+            "kind": "flowchart",
+            "summary": "从辅助样本到偏移链提取的多阶段分析流程",
+            "sourceRefs": [
+              "6/analysis/使用说明.md",
+              "6/analysis/ApiMonitor_AAA.md"
+            ]
+          }
+        ],
+        "relatedArtifacts": [
+          {
+            "type": "symbol",
+            "label": "6/analysis/"
+          },
+          {
+            "type": "symbol",
+            "label": "6/dump/"
+          }
+        ]
+      },
+      "parentId": "yysls-offset-chain",
+      "children": [],
+      "sources": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ],
+      "confidence": "high",
+      "stale": false,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      }
+    },
+    {
+      "id": "hexm-engine",
+      "lensId": "reverse-engineering",
+      "nodeKind": "concept",
+      "title": "hexm 引擎 — 游戏内部 Lua VM",
+      "summary": "燕云十六声使用的自定义 Lua 5.4 虚拟机引擎，国际服与国服共用代码库",
+      "detail": {
+        "coreDescription": "游戏使用自定义的 Lua 5.4 VM（内部称 hexm），通过 lua_load/lua_pcall 执行脚本。国际服与国服共享代码库，证据为拼音函数名（如 set_niubility）。GM 命令通过 portable.import('hexm.client.ui.windows.gm...') 路径访问。",
+        "keyFacts": [
+          "Lua 版本: 自定义 Lua 5.4 VM",
+          "模块路径前缀: hexm.client.ui.windows.gm",
+          "GM 功能通过 G.main_player 和 cc.Director 访问游戏对象",
+          "国际服论坛已公开完整 GM API 清单"
+        ],
+        "keyLogic": [
+          "注入点: hook lua_load → 拦截脚本加载 → 注入自定义 Lua 代码",
+          "GM 控制台: 通过 Lua 脚本打开 debug/GM console",
+          "buff 系统: add_buff(buff_id, entity_id) 调用链"
+        ],
+        "riskSignals": [
+          "引擎版本更新可能改变函数签名和偏移",
+          "反作弊可能检测非预期的 Lua 脚本执行"
+        ],
+        "diagramArtifacts": [],
+        "relatedArtifacts": []
+      },
+      "parentId": "project-root",
+      "children": [
+        "project-7-lua-injector"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ],
+      "confidence": "high",
+      "stale": false,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      }
+    },
+    {
+      "id": "yysls-offset-chain",
+      "lensId": "reverse-engineering",
+      "nodeKind": "concept",
+      "title": "yysls.exe 偏移链结构",
+      "summary": "已验证的游戏坐标读取偏移链：全局基址 + 0x58 → 二级指针 → 坐标浮点值",
+      "detail": {
+        "coreDescription": "从全局基址 yysls.exe+0x07C04698 出发，通过两级指针解引用读取玩家坐标。偏移链: base → +0x58 → +0x0 或 +0x10 → +0x340(X)/+0x348(Y)/+0x350(Z)。该结构来自6号 AAA.exe 的逆向分析和 CT 表验证。",
+        "keyFacts": [
+          "全局基址偏移: yysls.exe + 0x07C04698",
+          "一级偏移: +0x58",
+          "二级偏移: +0x0 或 +0x10（两条有效路径）",
+          "坐标偏移: +0x340(X float) / +0x348(Y float) / +0x350(Z float)",
+          "验证方法: 读取 float 值判断是否为合理坐标范围"
+        ],
+        "keyLogic": [
+          "OffsetChainExplorer.cs: 暴力遍历所有偏移组合发现有效链",
+          "YYSLS_OffsetVerifier.cs: 自动验证已知偏移链在当前版本是否有效",
+          "YYSLS_Teleport.cs: 基于偏移链实现坐标写入（传送功能）"
+        ],
+        "riskSignals": [
+          "游戏版本更新可能导致偏移链失效",
+          "偏移 0x07C04698 为硬编码，需随版本更新"
+        ],
+        "diagramArtifacts": [],
+        "relatedArtifacts": [
+          {
+            "type": "symbol",
+            "label": "6/analysis/OffsetChainExplorer.cs"
+          },
+          {
+            "type": "symbol",
+            "label": "6/analysis/YYSLS_OffsetVerifier.cs"
+          },
+          {
+            "type": "symbol",
+            "label": "6/analysis/YYSLS_Teleport.cs"
+          }
+        ]
+      },
+      "parentId": "project-root",
+      "children": [
+        "project-6-aaa-analysis"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ],
+      "confidence": "high",
+      "stale": false,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      }
+    }
+  ]
+}

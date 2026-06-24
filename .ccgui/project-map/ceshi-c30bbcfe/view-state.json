@@ -1,0 +1,48 @@
+{
+  "layoutPreset": "radial",
+  "nodeLayouts": {
+    "anti-cheat-intel": {
+      "x": 715.03,
+      "y": 620,
+      "pinned": true,
+      "updatedAt": "2026-06-24T01:19:12.619Z"
+    },
+    "project-root": {
+      "x": 1200,
+      "y": 800,
+      "pinned": true,
+      "updatedAt": "2026-06-24T01:19:18.672Z"
+    },
+    "unassigned-discoveries": {
+      "x": 1684.97,
+      "y": 620,
+      "pinned": true,
+      "updatedAt": "2026-06-24T01:20:39.659Z"
+    }
+  },
+  "updatedAt": "2026-06-24T01:20:39.659Z",
+  "tours": {
+    "steps": [],
+    "updatedAt": "2026-06-24T00:30:13.467Z"
+  },
+  "graphRepair": {
+    "issues": [
+      {
+        "id": "node:unassigned-discoveries:missing-evidence",
+        "kind": "missing-node-evidence",
+        "severity": "info",
+        "label": "待整理发现 Unassigned Discoveries has no evidence source",
+        "nodeId": "unassigned-discoveries"
+      }
+    ],
+    "actions": [
+      {
+        "id": "repair:node:unassigned-discoveries:evidence:quarantine",
+        "kind": "quarantine-evidence-gap",
+        "label": "Marked 待整理发现 Unassigned Discoveries as stale because evidence is missing",
+        "nodeId": "unassigned-discoveries"
+      }
+    ],
+    "repairedAt": "2026-06-24T01:19:30.856Z"
+  }
+}

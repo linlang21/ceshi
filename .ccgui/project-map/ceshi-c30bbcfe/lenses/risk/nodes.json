@@ -1,0 +1,148 @@
+{
+  "items": [
+    {
+      "id": "samples-vmp",
+      "lensId": "risk",
+      "nodeKind": "module",
+      "title": "1-5号 VMP 保护辅助样本",
+      "summary": "5个被 VMProtect 完全保护的辅助样本，静态分析失败，仅提取 UI 功能名称",
+      "detail": {
+        "coreDescription": "样本集合包含5个不同版本的辅助工具，均使用 VMP 保护。仅1号(UPX+VMP)可脱外层壳，其余完全无法静态分析。通过 UIAutomation 成功提取1号的112个功能特征（自动瞬移、加速、变大、飞天遁地等），但无实现代码。",
+        "keyFacts": [
+          "1号 VVV.exe: UPX+VMP，已脱壳为 VVV_unpacked.exe，仅 UI 提取成功",
+          "2号 V2.3.exe: VMP SDK+字符串加密，无提取",
+          "3号 燕云学习软件 V2.4.exe: 完整 VMP，33MB，无提取",
+          "4号 燕云十六科技学习_0.3.exe: 完整 VMP，35MB，无提取",
+          "5号: 完整 VMP，21MB，无提取（2026-04-10 编译，最新）"
+        ],
+        "keyLogic": [
+          "推荐路径: 放弃提取，自己重建（路径4，最高推荐）",
+          "备选: API 监控（最安全）、内存 Dump（中等难度）、版本检查绕过（长期支线）"
+        ],
+        "riskSignals": [
+          "所有样本 VMP 保护强度极高，静态分析完全失败",
+          "样本可能包含恶意代码（反调试、检测机制）",
+          "2026-04-10 编译的5号表明工具仍在活跃更新"
+        ],
+        "diagramArtifacts": [],
+        "relatedArtifacts": [
+          {
+            "type": "symbol",
+            "label": "samples_1-5_vmp_protected/"
+          }
+        ]
+      },
+      "parentId": "anti-cheat-intel",
+      "children": [],
+      "sources": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ],
+      "confidence": "high",
+      "stale": false,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      }
+    },
+    {
+      "id": "anti-cheat-intel",
+      "lensId": "risk",
+      "nodeKind": "concept",
+      "title": "反作弊情报",
+      "summary": "燕云十六声反作弊机制：VAD Tree 检测、LoadLibrary Hook、安全注入方式、字符串混淆",
+      "detail": {
+        "coreDescription": "国际服论坛资料揭示了游戏反作弊的多层防御：VAD Tree 扫描检测注入 DLL、LoadLibrary Hook 拦截 DLL 加载、字符串混淆增加逆向难度。安全注入方式包括 dinput8 代理和 Frida Gadget。",
+        "keyFacts": [
+          "VAD Tree 检测: 扫描进程虚拟地址描述符树发现异常 DLL",
+          "LoadLibrary Hook: 拦截所有 DLL 加载请求",
+          "安全注入: dinput8.dll 代理（游戏目录放置）",
+          "字符串混淆: 反逆向手段"
+        ],
+        "keyLogic": [
+          "dinput8 代理方式可绕过部分 LoadLibrary 检测",
+          "Frida Gadget 作为合法 DLL 加载，需注意 VAD Tree 检测"
+        ],
+        "riskSignals": [
+          "反作弊机制持续更新，情报可能过时",
+          "VAD Tree 检测对 Frida Gadget 有效",
+          "使用任何注入工具都有封号风险"
+        ],
+        "diagramArtifacts": [],
+        "relatedArtifacts": []
+      },
+      "parentId": "project-root",
+      "children": [
+        "samples-vmp"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Test.lua-main/README.md",
+          "hash": "2ebcee36",
+          "excerpt": "# Test.lua"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet  Lua Script/README.md",
+          "hash": "efd0d972",
+          "excerpt": "# 目录索引 — Where Winds Meet Lua Script（国际服论坛资料）\n\n国外论坛关于燕云十六声**国际服** GM/作弊脚本的讨论与附件，已分类归档。\n\n> 🔗 **关联**：本资料是 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 的国际服参考来源（同 `hexm` 引擎）。项目总览见 [项目文档.md](../../项目文档.md)。另见国服注入 PoC [Where Winds Meet/README.md](../Where%20Winds%20Meet/README.md)（抓到无敌真实调用链）。\n\n## 📄 先读这两份\n\n- **[国际服资料整理总结.md](国际服资"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/Where Winds Meet/README.md",
+          "hash": "8521551a",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n> 🔗 **项目内关联**：这是国际服 Lua 注入概念验证（dinput8 代理 + Frida）。它抓到的**无敌真实调用链**（`gm_set_invincible(1)` → `add_buff(70063, eid)`，见文末 Status 节）已被国服 [7号 FridaGM 工具](../banyi/GM工具开发文档.md) 参考。论坛情报整理见 [Where Winds Meet  Lua Script/](../Where%20Winds%20Meet%20%20Lua%20Script/README.md)；项目总览见 [项目文档.md]"
+        },
+        {
+          "type": "file",
+          "label": "README.md",
+          "path": "7/WhereWindsMeet-Lua-Injector-main/README.md",
+          "hash": "e3bc6abc",
+          "excerpt": "# WhereWindsMeet-Lua-Frida-Injector\n\n**Proof-of-concept Lua injector for _Where Winds Meet_ (PC)** using:\n\n- a **proxy `dinput8.dll`** placed in the same folder as `wwm.exe` (the game executable)\n- **Frida Gadget** (`frida-gadget.dll`)\n- a small **Python loader** (`Loader_gadget.py`)\n- a **Frida JS script** (`hook.js`)"
+        }
+      ],
+      "confidence": "medium",
+      "stale": false,
+      "candidate": false,
+      "lastGeneratedAt": "2026-06-24T01:09:34.817Z",
+      "generatedBy": {
+        "engine": "claude",
+        "model": "mimo-v2.5-pro",
+        "runId": "global_mqrdj5vk_n036ns"
+      }
+    }
+  ]
+}

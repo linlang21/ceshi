@@ -1,0 +1,67 @@
+{
+  "items": [
+    {
+      "id": "organizer_project-7-lua-injector_hexm-engine_20260624T012008146Z",
+      "status": "confirmed",
+      "createdAt": "2026-06-24T01:20:08.146Z",
+      "updatedAt": "2026-06-24T01:20:28.704Z",
+      "source": "organizer",
+      "kind": "parentMove",
+      "targetLensId": "injection-tools",
+      "targetNodeId": "project-7-lua-injector",
+      "patch": {
+        "nodeId": "project-7-lua-injector"
+      },
+      "move": {
+        "nodeId": "project-7-lua-injector",
+        "fromParentId": "unassigned-discoveries",
+        "suggestedParentId": "hexm-engine",
+        "confidence": "high",
+        "reason": "Lua 注入 PoC 的核心目标是 hexm 引擎的 Lua VM，直接隶属于该引擎概念节点"
+      },
+      "evidence": []
+    },
+    {
+      "id": "organizer_project-6-aaa-analysis_yysls-offset-chain_20260624T012008146Z",
+      "status": "confirmed",
+      "createdAt": "2026-06-24T01:20:08.146Z",
+      "updatedAt": "2026-06-24T01:20:28.704Z",
+      "source": "organizer",
+      "kind": "parentMove",
+      "targetLensId": "reverse-engineering",
+      "targetNodeId": "project-6-aaa-analysis",
+      "patch": {
+        "nodeId": "project-6-aaa-analysis"
+      },
+      "move": {
+        "nodeId": "project-6-aaa-analysis",
+        "fromParentId": "unassigned-discoveries",
+        "suggestedParentId": "yysls-offset-chain",
+        "confidence": "medium",
+        "reason": "AAA.exe 分析工具集的核心产出是偏移链提取与验证（OffsetChainExplorer、YYSLS_OffsetVerifier），作为偏移链结构的具体分析实例归属合理"
+      },
+      "evidence": []
+    },
+    {
+      "id": "organizer_samples-vmp_anti-cheat-intel_20260624T012008146Z",
+      "status": "confirmed",
+      "createdAt": "2026-06-24T01:20:08.146Z",
+      "updatedAt": "2026-06-24T01:20:28.704Z",
+      "source": "organizer",
+      "kind": "parentMove",
+      "targetLensId": "risk",
+      "targetNodeId": "samples-vmp",
+      "patch": {
+        "nodeId": "samples-vmp"
+      },
+      "move": {
+        "nodeId": "samples-vmp",
+        "fromParentId": "unassigned-discoveries",
+        "suggestedParentId": "anti-cheat-intel",
+        "confidence": "high",
+        "reason": "VMP 保护样本属于反作弊机制的情报收集，是反作弊情报的具体证据节点"
+      },
+      "evidence": []
+    }
+  ]
+}
