@@ -12,7 +12,7 @@ class PackTool
     static string SourceDir = Path.Combine(BaseDir, "FridaGM");
     static string SourceCode = Path.Combine(BaseDir, "FridaGMTool.NetFx.cs");
     static string StubExe = Path.Combine(BaseDir, "FridaGMTool_build.exe");
-    static string OutputExe = Path.Combine(RootDir, "FridaGMTool_单文件版.exe");
+    static string OutputExe = Path.Combine(RootDir, "FridaGMTool_v1.1_单文件版.exe");
     // 子进程超时（毫秒）：VMProtect / ConfuserEx 都可能长时间运行
     const int SUBPROC_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -69,27 +69,7 @@ class PackTool
         CompileStub();
         ObfuscateStub();
         string compressedDll = CompressDllIfAvailable();
-
-        string finalExe = StubExe;
-        string vmProtectedExe = Path.Combine(SourceDir, "app_protected.exe");
-        if (File.Exists(vmProtectedExe))
-        {
-            finalExe = vmProtectedExe;
-            Console.WriteLine("检测到 VMProtect 保护后的主程序: " + vmProtectedExe);
-        }
-        else if (PackFinalMode)
-        {
-            Console.WriteLine("[错误] --pack-final 模式要求存在 " + vmProtectedExe);
-            Console.WriteLine("请确认已执行 VMProtect 生成 app_protected.exe。");
-            Environment.Exit(1);
-        }
-        else
-        {
-            Console.WriteLine("[提示] 未找到 app_protected.exe。如需 VMProtect 加壳，请先执行：");
-            Console.WriteLine("  1. PackTool.exe --prepare-vmprotect");
-            Console.WriteLine("  2. 用 VMProtect 处理生成的 app.exe");
-            Console.WriteLine("  3. PackTool.exe --pack-final");
-        }
+        string finalExe = ResolveFinalExecutable();
 
         var filesToPack = new List<Tuple<string, string>>();
         filesToPack.Add(Tuple.Create(finalExe, "app.exe"));
@@ -123,6 +103,12 @@ class PackTool
             if (name.Equals("buff分类说明.md", StringComparison.OrdinalIgnoreCase))
                 continue;
             if (name.Equals("config.txt", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals("version_manifest.txt", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals("version_manifest_url.txt", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals("server_version_manifest.txt", StringComparison.OrdinalIgnoreCase))
                 continue;
             // 排除运行时残留文件（不应打包）
             if (name.Equals("gm_cmd_result.txt", StringComparison.OrdinalIgnoreCase) || name.Equals("gm_tool.log", StringComparison.OrdinalIgnoreCase))
@@ -242,6 +228,92 @@ class PackTool
             Console.WriteLine(error);
             Environment.Exit(1);
         }
+    }
+
+    static DateTime GetWriteTimeUtcOrMin(string path)
+    {
+        return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
+    }
+
+    static bool IsFreshAgainstInputs(string outputPath, params string[] inputs)
+    {
+        if (!File.Exists(outputPath)) return false;
+        DateTime outputTime = GetWriteTimeUtcOrMin(outputPath);
+        foreach (string input in inputs)
+        {
+            if (!string.IsNullOrEmpty(input) && GetWriteTimeUtcOrMin(input) > outputTime)
+                return false;
+        }
+        return true;
+    }
+
+    static string ResolveFinalExecutable()
+    {
+        string appExePath = Path.Combine(SourceDir, "app.exe");
+        string vmpProject = Path.Combine(BaseDir, "protect_app.vmp");
+        string vmProtectedExe = Path.Combine(SourceDir, "app_protected.exe");
+
+        bool protectedFresh = IsFreshAgainstInputs(vmProtectedExe, StubExe, SourceCode, vmpProject);
+        if (protectedFresh)
+        {
+            Console.WriteLine("检测到最新 VMProtect 保护后的主程序: " + vmProtectedExe);
+            return vmProtectedExe;
+        }
+
+        if (File.Exists(vmProtectedExe))
+            Console.WriteLine("[提示] 现有 app_protected.exe 已过期，准备按最新源码重建。");
+        else
+            Console.WriteLine("[提示] 未找到 app_protected.exe，准备按最新源码生成。");
+
+        string vmprotectCon = FindTool(new string[] {
+            Path.Combine(RootDir, "VMProtect3.9.4", "VMProtect_Con.exe"),
+            Path.Combine(RootDir, "VMProtect", "VMProtect_Con.exe"),
+            Path.Combine(RootDir, "VMProtect_Con.exe")
+        });
+
+        bool canRunVmprotect = !string.IsNullOrEmpty(vmprotectCon) && File.Exists(vmpProject);
+        if (!canRunVmprotect)
+        {
+            if (PackFinalMode)
+            {
+                Console.WriteLine("[错误] app_protected.exe 已过期，且未找到可用的 VMProtect 命令行或工程文件。");
+                Console.WriteLine("当前为避免继续打包旧壳，已停止。");
+                Environment.Exit(1);
+            }
+
+            Console.WriteLine("[警告] 无法自动重建 VMProtect 主程序，当前将改用最新未加壳主程序打包。");
+            return StubExe;
+        }
+
+        File.Copy(StubExe, appExePath, true);
+        Console.WriteLine("已刷新 VMProtect 输入文件: " + appExePath);
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = vmprotectCon,
+            Arguments = string.Format("\"{0}\" \"{1}\" -pf \"{2}\"", appExePath, vmProtectedExe, vmpProject)
+        };
+        string output, error;
+        Console.WriteLine("正在使用 VMProtect 命令行重建主程序...");
+        int code = RunProcess(psi, SUBPROC_TIMEOUT_MS, out output, out error);
+        if (!string.IsNullOrWhiteSpace(output)) Console.WriteLine(output);
+        if (!string.IsNullOrWhiteSpace(error)) Console.WriteLine(error);
+
+        bool rebuiltFresh = code == 0 && IsFreshAgainstInputs(vmProtectedExe, StubExe, SourceCode, vmpProject);
+        if (rebuiltFresh)
+        {
+            Console.WriteLine("VMProtect 主程序重建完成: " + vmProtectedExe);
+            return vmProtectedExe;
+        }
+
+        if (PackFinalMode)
+        {
+            Console.WriteLine("[错误] VMProtect 重建失败，当前为避免继续打包旧壳，已停止。");
+            Environment.Exit(1);
+        }
+
+        Console.WriteLine("[警告] VMProtect 重建失败，当前将改用最新未加壳主程序打包。");
+        return StubExe;
     }
 
     static void ObfuscateStub()
@@ -415,7 +487,7 @@ class PackTool
             Path.Combine(RootDir, "VMProtect", "VMProtect_Con.exe"),
             Path.Combine(RootDir, "VMProtect_Con.exe")
         });
-        string vmpProject = Path.Combine(SourceDir, "protect_app.vmp");
+        string vmpProject = Path.Combine(BaseDir, "protect_app.vmp");
         string vmProtectedExe = Path.Combine(SourceDir, "app_protected.exe");
 
         if (!string.IsNullOrEmpty(vmprotectCon) && File.Exists(vmpProject))

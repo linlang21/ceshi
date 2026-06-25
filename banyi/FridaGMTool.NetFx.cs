@@ -6,6 +6,7 @@ using System.Windows.Forms;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -150,6 +151,58 @@ namespace FridaGMTool
         const uint PROCESS_VM_OPERATION = 0x0008;
         const long GLOBAL_BASE_OFFSET = 0x07C04698;
         const string DefaultMmfName = "Global\\WinSvcSharedMem";
+        const string CurrentVersionText = "1.1";
+        const string DefaultNoticeText = "当前版本：v1.1\n测试版本，仅限当前使用。";
+        const int ManifestLoadTimeoutMs = 5000;
+        const int ManifestCacheFreshHours = 6;
+        const SecurityProtocolType Tls11SecurityProtocol = (SecurityProtocolType)768;
+        const SecurityProtocolType Tls12SecurityProtocol = (SecurityProtocolType)3072;
+        static readonly Version CurrentVersion = ParseVersionText(CurrentVersionText);
+        const string EmbeddedManifestUrl = "https://fz.wk110.top/fridagm/version_manifest.txt";
+        static readonly string LocalVersionManifestFile = Path.Combine(ToolDir, "version_manifest.txt");
+        static readonly string VersionManifestSourceFile = Path.Combine(ToolDir, "version_manifest_url.txt");
+        static readonly string SharedManifestDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "FridaGM");
+        static readonly string SharedVersionManifestFile = Path.Combine(SharedManifestDir, "version_manifest.txt");
+        static readonly TimeSpan ManifestCacheFreshWindow = TimeSpan.FromHours(ManifestCacheFreshHours);
+        static VersionManifestInfo StartupManifest = CreateDefaultManifest();
+        static bool modernTlsConfigured;
+
+        class VersionManifestInfo
+        {
+            public string LatestVersion;
+            public string MinSupportedVersion;
+            public string Notice;
+            public string DownloadUrl;
+            public string BlockMessage;
+            public bool BlockOnManifestError;
+            public bool RemoteLoaded;
+            public string ManifestSource;
+            public string ManifestError;
+        }
+
+        sealed class TimeoutWebClient : WebClient
+        {
+            readonly int timeoutMs;
+
+            public TimeoutWebClient(int timeoutMs)
+            {
+                this.timeoutMs = timeoutMs;
+                Encoding = Encoding.UTF8;
+            }
+
+            protected override WebRequest GetWebRequest(Uri address)
+            {
+                WebRequest request = base.GetWebRequest(address);
+                request.Timeout = timeoutMs;
+                HttpWebRequest httpRequest = request as HttpWebRequest;
+                if (httpRequest != null)
+                {
+                    httpRequest.ReadWriteTimeout = timeoutMs;
+                    httpRequest.UserAgent = "FridaGMTool/" + CurrentVersionText;
+                }
+                return request;
+            }
+        }
 
         [DllImport("kernel32.dll")]
         static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
@@ -221,8 +274,8 @@ namespace FridaGMTool
         Button btnStaminaDive, btnStaminaEmpty, btnStaminaResetAll, btnPitchPot, btnApplyAtkMul, btnResetAtkMul, btnApplyDialogSpeed, btnResetDialogSpeed, btnCutsceneKill, btnApplyAtkSpeed, btnResetAtkSpeed;
         ComboBox cmbAtkMul, cmbAtkSpeed;
         TextBox txtDialogSpeed;
-        TextBox txtLog = null;
         TextBox txtCoordInput;
+        Label lblNotice;
         System.Windows.Forms.Timer readyPollTimer;
         System.Windows.Forms.Timer injectionDiagTimer;
         System.Windows.Forms.Timer commandResultTimer;
@@ -325,11 +378,309 @@ namespace FridaGMTool
             ToolResultCompatFile = Path.Combine(WorkDir, "gm_tool_result.txt");
         }
 
+        static Version ParseVersionText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return new Version(0, 0, 0, 0);
+            string cleaned = text.Trim();
+            if (cleaned.StartsWith("v", StringComparison.OrdinalIgnoreCase)) cleaned = cleaned.Substring(1).Trim();
+
+            MatchCollection matches = Regex.Matches(cleaned, @"\d+");
+            int[] parts = new int[] { 0, 0, 0, 0 };
+            for (int i = 0; i < matches.Count && i < parts.Length; i++)
+            {
+                int value;
+                if (int.TryParse(matches[i].Value, out value)) parts[i] = value;
+            }
+
+            try { return new Version(parts[0], parts[1], parts[2], parts[3]); }
+            catch { return new Version(0, 0, 0, 0); }
+        }
+
+        static void EnsureModernTls()
+        {
+            if (modernTlsConfigured) return;
+            try
+            {
+                ServicePointManager.SecurityProtocol |= Tls11SecurityProtocol | Tls12SecurityProtocol;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Enable TLS 1.1/1.2 failed: " + ex.Message);
+            }
+            modernTlsConfigured = true;
+        }
+
+        static void CleanupLegacyManifestFiles()
+        {
+            string[] legacyPaths = new string[]
+            {
+                LocalVersionManifestFile,
+                VersionManifestSourceFile
+            };
+
+            foreach (string path in legacyPaths)
+            {
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                        File.Delete(path);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine("Cleanup legacy manifest file failed: " + ex.Message);
+                }
+            }
+        }
+
+        static VersionManifestInfo CreateDefaultManifest()
+        {
+            return new VersionManifestInfo
+            {
+                LatestVersion = CurrentVersionText,
+                MinSupportedVersion = CurrentVersionText,
+                Notice = DefaultNoticeText,
+                DownloadUrl = "",
+                BlockMessage = "当前版本已停用，请更新到最新版后再使用。",
+                BlockOnManifestError = false,
+                RemoteLoaded = false,
+                ManifestSource = EmbeddedManifestUrl,
+                ManifestError = ""
+            };
+        }
+
+        static string NormalizeManifestText(string value)
+        {
+            return string.IsNullOrEmpty(value) ? "" : value.Replace("\\n", Environment.NewLine).Trim();
+        }
+
+        static string LoadManifestTextFromSource(string source)
+        {
+            Uri uri;
+            if (Uri.TryCreate(source, UriKind.Absolute, out uri))
+            {
+                if (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+                {
+                    using (var client = new TimeoutWebClient(ManifestLoadTimeoutMs))
+                        return client.DownloadString(uri);
+                }
+                if (uri.Scheme == Uri.UriSchemeFile)
+                    return File.ReadAllText(uri.LocalPath, new UTF8Encoding(false));
+            }
+            return File.ReadAllText(source, new UTF8Encoding(false));
+        }
+
+        static VersionManifestInfo ParseManifestText(string text, string source, bool remoteLoaded)
+        {
+            VersionManifestInfo info = CreateDefaultManifest();
+            info.RemoteLoaded = remoteLoaded;
+            info.ManifestSource = source;
+
+            if (string.IsNullOrWhiteSpace(text)) return info;
+            string[] lines = text.Replace("\r\n", "\n").Split('\n');
+            foreach (string raw in lines)
+            {
+                string line = raw.Trim();
+                if (string.IsNullOrEmpty(line) || line.StartsWith("#")) continue;
+                int index = line.IndexOf('=');
+                if (index <= 0) continue;
+
+                string key = line.Substring(0, index).Trim().ToLowerInvariant();
+                string value = line.Substring(index + 1).Trim();
+                switch (key)
+                {
+                    case "latest_version":
+                        info.LatestVersion = value;
+                        break;
+                    case "min_supported_version":
+                        info.MinSupportedVersion = value;
+                        break;
+                    case "notice":
+                        info.Notice = NormalizeManifestText(value);
+                        break;
+                    case "download_url":
+                        info.DownloadUrl = value;
+                        break;
+                    case "block_message":
+                        info.BlockMessage = NormalizeManifestText(value);
+                        break;
+                    case "block_on_manifest_error":
+                        bool blockOnError;
+                        if (bool.TryParse(value, out blockOnError)) info.BlockOnManifestError = blockOnError;
+                        break;
+                }
+            }
+            return info;
+        }
+
+        static VersionManifestInfo MergeManifest(VersionManifestInfo baseInfo, VersionManifestInfo overrideInfo)
+        {
+            VersionManifestInfo merged = CreateDefaultManifest();
+            VersionManifestInfo source = baseInfo ?? CreateDefaultManifest();
+            merged.LatestVersion = source.LatestVersion;
+            merged.MinSupportedVersion = source.MinSupportedVersion;
+            merged.Notice = source.Notice;
+            merged.DownloadUrl = source.DownloadUrl;
+            merged.BlockMessage = source.BlockMessage;
+            merged.BlockOnManifestError = source.BlockOnManifestError;
+            merged.RemoteLoaded = source.RemoteLoaded;
+            merged.ManifestSource = source.ManifestSource;
+            merged.ManifestError = source.ManifestError;
+
+            if (overrideInfo == null) return merged;
+            if (!string.IsNullOrWhiteSpace(overrideInfo.LatestVersion)) merged.LatestVersion = overrideInfo.LatestVersion;
+            if (!string.IsNullOrWhiteSpace(overrideInfo.MinSupportedVersion)) merged.MinSupportedVersion = overrideInfo.MinSupportedVersion;
+            if (!string.IsNullOrWhiteSpace(overrideInfo.Notice)) merged.Notice = overrideInfo.Notice;
+            if (!string.IsNullOrWhiteSpace(overrideInfo.DownloadUrl)) merged.DownloadUrl = overrideInfo.DownloadUrl;
+            if (!string.IsNullOrWhiteSpace(overrideInfo.BlockMessage)) merged.BlockMessage = overrideInfo.BlockMessage;
+            merged.BlockOnManifestError = overrideInfo.BlockOnManifestError;
+            merged.RemoteLoaded = overrideInfo.RemoteLoaded;
+            if (!string.IsNullOrWhiteSpace(overrideInfo.ManifestSource)) merged.ManifestSource = overrideInfo.ManifestSource;
+            merged.ManifestError = overrideInfo.ManifestError;
+            return merged;
+        }
+
+        static VersionManifestInfo LoadStartupManifest()
+        {
+            VersionManifestInfo manifest = CreateDefaultManifest();
+            try
+            {
+                string remoteText = LoadManifestTextFromSource(EmbeddedManifestUrl);
+                manifest = MergeManifest(manifest, ParseManifestText(remoteText, EmbeddedManifestUrl, true));
+                manifest.ManifestSource = EmbeddedManifestUrl;
+                manifest.ManifestError = "";
+                PersistSharedVersionManifest(manifest);
+            }
+            catch (Exception ex)
+            {
+                VersionManifestInfo cachedManifest;
+                string cacheFailure;
+                if (TryLoadFreshCachedManifest(out cachedManifest, out cacheFailure))
+                    return cachedManifest;
+
+                manifest.ManifestSource = EmbeddedManifestUrl;
+                manifest.ManifestError = ex.Message + (string.IsNullOrWhiteSpace(cacheFailure) ? "" : "\n缓存回退失败: " + cacheFailure);
+                manifest.BlockOnManifestError = true;
+            }
+            return manifest;
+        }
+
+        static bool TryLoadFreshCachedManifest(out VersionManifestInfo manifest, out string failureReason)
+        {
+            manifest = null;
+            failureReason = "";
+            try
+            {
+                if (!File.Exists(SharedVersionManifestFile))
+                {
+                    failureReason = "未找到共享缓存";
+                    return false;
+                }
+
+                DateTime cacheWriteTimeUtc = File.GetLastWriteTimeUtc(SharedVersionManifestFile);
+                TimeSpan cacheAge = DateTime.UtcNow - cacheWriteTimeUtc;
+                if (cacheAge < TimeSpan.Zero) cacheAge = TimeSpan.Zero;
+                if (cacheAge > ManifestCacheFreshWindow)
+                {
+                    failureReason = "共享缓存已过期，最后更新时间距今 " + Math.Round(cacheAge.TotalMinutes) + " 分钟";
+                    return false;
+                }
+
+                string cachedText = File.ReadAllText(SharedVersionManifestFile, new UTF8Encoding(false));
+                manifest = MergeManifest(CreateDefaultManifest(), ParseManifestText(cachedText, SharedVersionManifestFile, false));
+                manifest.ManifestSource = SharedVersionManifestFile + " (fresh-cache)";
+                manifest.ManifestError = "";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failureReason = ex.Message;
+                return false;
+            }
+        }
+
+        static void PersistSharedVersionManifest(VersionManifestInfo manifest)
+        {
+            try
+            {
+                if (manifest == null) return;
+                Directory.CreateDirectory(SharedManifestDir);
+                StringBuilder sb = new StringBuilder();
+                sb.AppendLine("# 自动生成的共享版本清单");
+                sb.AppendLine("latest_version=" + (string.IsNullOrWhiteSpace(manifest.LatestVersion) ? CurrentVersionText : manifest.LatestVersion));
+                sb.AppendLine("min_supported_version=" + (string.IsNullOrWhiteSpace(manifest.MinSupportedVersion) ? CurrentVersionText : manifest.MinSupportedVersion));
+                sb.AppendLine("notice=" + (string.IsNullOrWhiteSpace(manifest.Notice) ? DefaultNoticeText : manifest.Notice).Replace(Environment.NewLine, "\\n"));
+                sb.AppendLine("download_url=" + (manifest.DownloadUrl ?? ""));
+                sb.AppendLine("block_message=" + (string.IsNullOrWhiteSpace(manifest.BlockMessage) ? "当前版本已停用，请更新到最新版后再使用。" : manifest.BlockMessage).Replace(Environment.NewLine, "\\n"));
+                sb.AppendLine("block_on_manifest_error=" + manifest.BlockOnManifestError.ToString().ToLowerInvariant());
+                File.WriteAllText(SharedVersionManifestFile, sb.ToString(), new UTF8Encoding(false));
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("Persist shared version manifest failed: " + ex.Message);
+            }
+        }
+
+        static bool EnsureVersionAllowed(VersionManifestInfo manifest)
+        {
+            VersionManifestInfo effectiveManifest = manifest ?? CreateDefaultManifest();
+            if (!string.IsNullOrWhiteSpace(effectiveManifest.ManifestError) && effectiveManifest.BlockOnManifestError)
+            {
+                MessageBox.Show(
+                    "版本清单读取失败，当前配置要求停止启动。"
+                    + "\n\n错误信息： " + effectiveManifest.ManifestError
+                    + "\n清单来源： " + effectiveManifest.ManifestSource,
+                    "版本校验失败",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return false;
+            }
+
+            Version minSupported = ParseVersionText(effectiveManifest.MinSupportedVersion);
+            if (CurrentVersion.CompareTo(minSupported) >= 0) return true;
+
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine(string.IsNullOrWhiteSpace(effectiveManifest.BlockMessage) ? "当前版本已停用，请更新到最新版后再使用。" : effectiveManifest.BlockMessage);
+            sb.AppendLine();
+            sb.AppendLine("当前版本：v" + CurrentVersionText);
+            sb.AppendLine("最低可用：v" + effectiveManifest.MinSupportedVersion);
+            if (!string.IsNullOrWhiteSpace(effectiveManifest.LatestVersion))
+                sb.AppendLine("最新版本：v" + effectiveManifest.LatestVersion);
+            if (!string.IsNullOrWhiteSpace(effectiveManifest.DownloadUrl))
+                sb.AppendLine("更新地址：" + effectiveManifest.DownloadUrl);
+            MessageBox.Show(sb.ToString().TrimEnd(), "版本已停用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+
+        static string BuildAnnouncementText(VersionManifestInfo manifest)
+        {
+            VersionManifestInfo effectiveManifest = manifest ?? CreateDefaultManifest();
+            StringBuilder sb = new StringBuilder();
+            sb.AppendLine("当前版本：v" + CurrentVersionText);
+            if (!string.IsNullOrWhiteSpace(effectiveManifest.Notice))
+            {
+                string normalized = effectiveManifest.Notice.Trim();
+                if (!normalized.StartsWith("当前版本：", StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.AppendLine(normalized);
+                }
+                else
+                {
+                    string[] lines = normalized.Replace("\r\n", "\n").Split('\n');
+                    for (int i = 1; i < lines.Length; i++)
+                    {
+                        string line = lines[i].Trim();
+                        if (!string.IsNullOrEmpty(line)) sb.AppendLine(line);
+                    }
+                }
+            }
+
+            return sb.ToString().TrimEnd();
+        }
+
         public GMForm()
         {
-            EnsurePayloadToolDir(ToolDir);
-            Text = "系统服务管理器";
-            Size = new Size(530, 380);
+            Text = "FridaGM 工具 v" + CurrentVersionText;
+            Size = new Size(560, 470);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -337,9 +688,9 @@ namespace FridaGMTool
             int y = 4;
 
             // === GM 命令 ===
-            grpGM = new Panel { Location = new Point(4, y), Size = new Size(508, 340), BackColor = Color.White };
-            const int rowStep = 28;
-            const int sectionGap = 4;
+            grpGM = new Panel { Location = new Point(8, y), Size = new Size(536, 424), BackColor = Color.White };
+            const int rowStep = 34;
+            const int sectionGap = 8;
             chkGod = new CheckBox { Text = "无敌", Size = new Size(110, 26) };
             chkGod.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkGod.Text, BuildCombatExperimentLua(chkGod.Checked ? "god" : "god_off")); };
             btnStamina = new Button { Text = "锁体力消耗", Size = new Size(110, 26) };
@@ -377,8 +728,8 @@ namespace FridaGMTool
             btnRemoveAllBuffs.Click += (s, e) => SendExperimentCommand("移除全部Buff", BuildLoopFeatureLua("remove_all_buffs"));
             btnStealthFlags = new Button { Text = "关闭安全标志", Size = new Size(110, 26) };
             btnStealthFlags.Click += (s, e) => SendExperimentCommand("关闭安全标志", BuildLoopFeatureLua("stealth_flags"));
-            var btnYyRemoveBuff = new Button { Text = "老六移除Buff", Size = new Size(110, 26) };
-            btnYyRemoveBuff.Click += (s, e) => SendExperimentCommand("老六移除Buff", BuildYyLaoLiuBuffToolLua("yy_remove_buffs"));
+            var btnYyRemoveBuff = new Button { Text = "备用移除Buff", Size = new Size(110, 26) };
+            btnYyRemoveBuff.Click += (s, e) => SendExperimentCommand("备用移除Buff", BuildYyLaoLiuBuffToolLua("yy_remove_buffs"));
 
             btnLoopBuff = new Button { Text = "循环强力Buff", Size = new Size(110, 26) };
             btnLoopBuff.Click += (s, e) => SendExperimentCommand("循环强力Buff", BuildLoopFeatureLua("loop_buff"));
@@ -425,23 +776,23 @@ namespace FridaGMTool
             btnApplyAtkSpeed.Click += (s, e) => ApplyAtkSpeedSelection();
             btnResetAtkSpeed = new Button { Text = "还原攻击速度", Size = new Size(100, 26) };
             btnResetAtkSpeed.Click += (s, e) => SendExperimentCommand("还原攻击速度", BuildCombatExperimentLua("atk_speed_reset"));
-            grpGM.Size = new Size(508, 340);
-            tabGM = new Panel { Location = new Point(4, 4), Size = new Size(500, 332), BackColor = Color.White };
-            var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(500, 32), BackColor = Color.White };
-            var btnTabInit = new Button { Text = "初始", Location = new Point(0, 4), Size = new Size(95, 24), Tag = "nav" };
-            var btnTabBattle = new Button { Text = "功能", Location = new Point(100, 4), Size = new Size(95, 24), Tag = "nav" };
-            var btnTabBuff = new Button { Text = "Buff", Location = new Point(200, 4), Size = new Size(95, 24), Tag = "nav" };
-            var btnTabTools = new Button { Text = "工具", Location = new Point(300, 4), Size = new Size(95, 24), Tag = "nav" };
+            grpGM.Size = new Size(536, 424);
+            tabGM = new Panel { Location = new Point(6, 6), Size = new Size(524, 412), BackColor = Color.White };
+            var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(524, 42), BackColor = Color.White };
+            var btnTabInit = new Button { Text = "快速启动", Location = new Point(0, 6), Size = new Size(112, 28), Tag = "nav" };
+            var btnTabBattle = new Button { Text = "功能", Location = new Point(118, 6), Size = new Size(112, 28), Tag = "nav" };
+            var btnTabBuff = new Button { Text = "Buff", Location = new Point(236, 6), Size = new Size(112, 28), Tag = "nav" };
+            var btnTabTools = new Button { Text = "工具", Location = new Point(354, 6), Size = new Size(112, 28), Tag = "nav" };
             tabNav.Controls.Add(btnTabInit);
             tabNav.Controls.Add(btnTabBattle);
             tabNav.Controls.Add(btnTabBuff);
             tabNav.Controls.Add(btnTabTools);
             tabGM.Controls.Add(tabNav);
 
-            tabInit = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
-            var tabBattle = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
-            var tabBuff = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
-            var tabTools = new ThinScrollPanel { Location = new Point(0, 32), Size = new Size(500, 300), BackColor = Color.White };
+            tabInit = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
+            var tabBattle = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
+            var tabBuff = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
+            var tabTools = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
             tabGM.Controls.Add(tabInit);
             tabGM.Controls.Add(tabBattle);
             tabGM.Controls.Add(tabBuff);
@@ -475,49 +826,52 @@ namespace FridaGMTool
 
             // ── 初始 tab content ──
             int[] yInit = new int[] { 4 };
-            Func<int, int, Point> posInit = (col, yy) => new Point(8 + col * 115, yy);
-            tabInit.Controls.Add(new Label { Text = "── 操作 ──", Location = new Point(8, yInit[0]), Size = new Size(480, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+            Func<int, int, Point> posInit = (col, yy) => new Point(12 + col * 124, yy);
+            tabInit.Controls.Add(new Label { Text = "── 启动 ──", Location = new Point(12, yInit[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
             yInit[0] += 18;
-            btnBrowse = new Button { Text = "选择目录", Size = new Size(110, 26) };
+            btnBrowse = new Button { Text = "选择游戏目录", Size = new Size(118, 28) };
             btnBrowse.Click += BtnBrowse_Click;
-            btnStartGame = new Button { Text = "1.启动游戏", Size = new Size(110, 26) };
+            btnStartGame = new Button { Text = "启动游戏", Size = new Size(118, 28) };
             btnStartGame.Click += BtnStartGame_Click;
-            btnInject = new Button { Text = "2.注入工具", Size = new Size(110, 26) };
+            btnInject = new Button { Text = "注入工具", Size = new Size(118, 28) };
             btnInject.Click += BtnInject_Click_B;
-            var btnTopMost = new Button { Text = "置顶窗口", Size = new Size(110, 26) };
-            btnTopMost.Click += (s, e) => { TopMost = !TopMost; btnTopMost.BackColor = TopMost ? Color.LightGreen : Color.White; btnTopMost.Text = TopMost ? "取消置顶" : "置顶窗口"; };
-            tabInit.Controls.Add(btnBrowse); btnBrowse.Location = posInit(0, yInit[0]);
-            tabInit.Controls.Add(btnStartGame); btnStartGame.Location = posInit(1, yInit[0]);
-            tabInit.Controls.Add(btnInject); btnInject.Location = posInit(2, yInit[0]);
-            tabInit.Controls.Add(btnTopMost); btnTopMost.Location = posInit(3, yInit[0]);
-            yInit[0] += rowStep;
-            btnRefresh = new Button { Text = "刷新状态", Size = new Size(110, 26) };
+            var btnTopMost = new Button { Text = "窗口置顶", Size = new Size(118, 28) };
+            btnTopMost.Click += (s, e) => { TopMost = !TopMost; btnTopMost.BackColor = TopMost ? Color.LightGreen : Color.White; btnTopMost.Text = TopMost ? "取消置顶" : "窗口置顶"; };
+            btnRefresh = new Button { Text = "刷新状态", Size = new Size(118, 28) };
             btnRefresh.Click += (s, e) => CheckState();
-            var btnOpenLog = new Button { Text = "打开日志", Size = new Size(110, 26) };
-            btnOpenLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) System.Diagnostics.Process.Start(UnifiedLogFile); else MessageBox.Show("日志文件不存在"); } catch (Exception ex) { MessageBox.Show("打开失败: " + ex.Message); } };
-            var btnOpenDir = new Button { Text = "打开目录", Size = new Size(110, 26) };
+            var btnOpenDir = new Button { Text = "打开工具目录", Size = new Size(118, 28) };
             btnOpenDir.Click += (s, e) => { try { System.Diagnostics.Process.Start("explorer.exe", ToolDir); } catch (Exception ex) { AppendLog("打开目录失败: " + ex.Message); } };
-            var btnClearLog = new Button { Text = "清除日志", Size = new Size(110, 26) };
+            var btnOpenLog = new Button { Text = "打开日志", Size = new Size(118, 28) };
+            btnOpenLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) System.Diagnostics.Process.Start(UnifiedLogFile); else MessageBox.Show("日志文件不存在"); } catch (Exception ex) { MessageBox.Show("打开失败: " + ex.Message); } };
+            var btnClearLog = new Button { Text = "清除日志", Size = new Size(118, 28) };
             btnClearLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) File.WriteAllText(UnifiedLogFile, ""); AppendLog("日志已清除"); } catch (Exception ex) { AppendLog("清除日志失败: " + ex.Message); } };
-            tabInit.Controls.Add(btnRefresh); btnRefresh.Location = posInit(0, yInit[0]);
-            tabInit.Controls.Add(btnOpenLog); btnOpenLog.Location = posInit(1, yInit[0]);
-            tabInit.Controls.Add(btnOpenDir); btnOpenDir.Location = posInit(2, yInit[0]);
+            tabInit.Controls.Add(btnStartGame); btnStartGame.Location = posInit(0, yInit[0]);
+            tabInit.Controls.Add(btnInject); btnInject.Location = posInit(1, yInit[0]);
+            tabInit.Controls.Add(btnTopMost); btnTopMost.Location = posInit(2, yInit[0]);
+            tabInit.Controls.Add(btnRefresh); btnRefresh.Location = posInit(3, yInit[0]);
+            yInit[0] += rowStep;
+            tabInit.Controls.Add(btnBrowse); btnBrowse.Location = posInit(0, yInit[0]);
+            tabInit.Controls.Add(btnOpenDir); btnOpenDir.Location = posInit(1, yInit[0]);
+            tabInit.Controls.Add(btnOpenLog); btnOpenLog.Location = posInit(2, yInit[0]);
             tabInit.Controls.Add(btnClearLog); btnClearLog.Location = posInit(3, yInit[0]);
             yInit[0] += rowStep + 6;
-            lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(460, 18), ForeColor = Color.Gray };
+            lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(492, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) };
             tabInit.Controls.Add(lblStatus);
             yInit[0] += 22;
-            tabInit.Controls.Add(new Label { Text = "── 公告 ──", Location = new Point(8, yInit[0]), Size = new Size(480, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+            tabInit.Controls.Add(new Label { Text = "── 公告 ──", Location = new Point(12, yInit[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
             yInit[0] += 18;
-            tabInit.Controls.Add(new Label { Text = "测试版本  功能单人世界使用  登录界面注入", Location = new Point(12, yInit[0]), Size = new Size(460, 18), ForeColor = Color.FromArgb(160, 100, 100), Font = new Font("Microsoft YaHei", 8, FontStyle.Bold) });
+            var noticePanel = new Panel { Location = new Point(12, yInit[0]), Size = new Size(492, 76), BackColor = Color.FromArgb(248, 250, 252) };
+            lblNotice = new Label { Text = BuildAnnouncementText(StartupManifest), Location = new Point(12, 10), Size = new Size(468, 56), ForeColor = Color.FromArgb(71, 85, 105), Font = new Font("Microsoft YaHei UI", 9F) };
+            noticePanel.Controls.Add(lblNotice);
+            tabInit.Controls.Add(noticePanel);
 
             int[] yBattle = new int[] { 4 };
             int[] yBuff = new int[] { 4 };
             int[] yTools = new int[] { 4 };
-            Func<int, int, Point> pos = (col, yy) => new Point(8 + col * 115, yy);
+            Func<int, int, Point> pos = (col, yy) => new Point(12 + col * 124, yy);
             Action<Control, string, int[]> addTabSection = (parent, title, yref) => {
                 if (parent.Controls.Count > 0) yref[0] += rowStep + sectionGap;
-                parent.Controls.Add(new Label { Text = "── " + title + " ──", Location = new Point(8, yref[0]), Size = new Size(480, 14), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+                parent.Controls.Add(new Label { Text = "── " + title + " ──", Location = new Point(12, yref[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
                 yref[0] += 18;
             };
             Action<Control, Control, int, int[]> place = (parent, control, col, yref) => {
@@ -533,7 +887,7 @@ namespace FridaGMTool
             place(tabBattle, chkSuperDodge, 0, yBattle);
             place(tabBattle, chkOneHit, 1, yBattle);
 
-            addTabSection(tabBattle, "辅助与小游戏", yBattle);
+            addTabSection(tabBattle, "辅助", yBattle);
             place(tabBattle, btnYyAutoLoot, 0, yBattle);
             place(tabBattle, btnYyRecover, 1, yBattle);
             place(tabBattle, btnRhythmGame, 2, yBattle);
@@ -544,14 +898,15 @@ namespace FridaGMTool
             btnCutsceneKill.Click += (s, e) => SendExperimentCommand("终止过场动画", BuildCombatExperimentLua("cutscene_kill"));
             place(tabBattle, btnCutsceneKill, 1, yBattle);
             place(tabBattle, btnStealthFlags, 2, yBattle);
+            place(tabBattle, btnAuxBuff, 3, yBattle);
 
             addTabSection(tabBattle, "剧情速度", yBattle);
-            tabBattle.Controls.Add(new Label { Text = "倍率", Location = new Point(8, yBattle[0] + 6), Size = new Size(40, 20) });
-            txtDialogSpeed.Location = new Point(93, yBattle[0] + 3);
+            tabBattle.Controls.Add(new Label { Text = "倍率", Location = new Point(12, yBattle[0] + 6), Size = new Size(40, 20) });
+            txtDialogSpeed.Location = new Point(74, yBattle[0] + 3);
             tabBattle.Controls.Add(txtDialogSpeed);
-            btnApplyDialogSpeed.Location = new Point(218, yBattle[0]);
+            btnApplyDialogSpeed.Location = new Point(206, yBattle[0]);
             tabBattle.Controls.Add(btnApplyDialogSpeed);
-            btnResetDialogSpeed.Location = new Point(323, yBattle[0]);
+            btnResetDialogSpeed.Location = new Point(316, yBattle[0]);
             tabBattle.Controls.Add(btnResetDialogSpeed);
 
             addTabSection(tabBuff, "Buff 施加", yBuff);
@@ -560,10 +915,9 @@ namespace FridaGMTool
             place(tabBuff, btnMinBuff, 2, yBuff);
             place(tabBuff, btnGatherBuff, 3, yBuff);
             yBuff[0] += rowStep;
-            place(tabBuff, btnAuxBuff, 0, yBuff);
-            place(tabBuff, btnUnknownBuff, 1, yBuff);
-            place(tabBuff, btnRemoveAllBuffs, 2, yBuff);
-            place(tabBuff, btnYyRemoveBuff, 3, yBuff);
+            place(tabBuff, btnUnknownBuff, 0, yBuff);
+            place(tabBuff, btnRemoveAllBuffs, 1, yBuff);
+            place(tabBuff, btnYyRemoveBuff, 2, yBuff);
 
             addTabSection(tabBuff, "循环功能 (再点停止)", yBuff);
             place(tabBuff, btnLoopBuff, 0, yBuff);
@@ -578,31 +932,31 @@ namespace FridaGMTool
             place(tabTools, btnStaminaResetAll, 3, yTools);
 
             addTabSection(tabTools, "速度 / 倍率", yTools);
-            tabTools.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(8, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbAtkMul.Location = new Point(93, yTools[0] + 3);
+            tabTools.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(12, yTools[0] + 6), Size = new Size(80, 20) });
+            cmbAtkMul.Location = new Point(96, yTools[0] + 3);
             tabTools.Controls.Add(cmbAtkMul);
-            btnApplyAtkMul.Location = new Point(218, yTools[0]);
+            btnApplyAtkMul.Location = new Point(224, yTools[0]);
             tabTools.Controls.Add(btnApplyAtkMul);
-            btnResetAtkMul.Location = new Point(323, yTools[0]);
+            btnResetAtkMul.Location = new Point(334, yTools[0]);
             tabTools.Controls.Add(btnResetAtkMul);
 
             yTools[0] += rowStep;
-            tabTools.Controls.Add(new Label { Text = "攻击速度", Location = new Point(8, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbAtkSpeed.Location = new Point(93, yTools[0] + 3);
+            tabTools.Controls.Add(new Label { Text = "攻击速度", Location = new Point(12, yTools[0] + 6), Size = new Size(80, 20) });
+            cmbAtkSpeed.Location = new Point(96, yTools[0] + 3);
             tabTools.Controls.Add(cmbAtkSpeed);
-            btnApplyAtkSpeed.Location = new Point(218, yTools[0]);
+            btnApplyAtkSpeed.Location = new Point(224, yTools[0]);
             tabTools.Controls.Add(btnApplyAtkSpeed);
-            btnResetAtkSpeed.Location = new Point(323, yTools[0]);
+            btnResetAtkSpeed.Location = new Point(334, yTools[0]);
             tabTools.Controls.Add(btnResetAtkSpeed);
 
             addTabSection(tabTools, "坐标", yTools);
-            Button btnLogPos = new Button { Text = "记录坐标", Size = new Size(110, 26) };
+            Button btnLogPos = new Button { Text = "记录坐标", Size = new Size(118, 28) };
             btnLogPos.Click += (s, ev) => SendExperimentCommand("记录坐标", BuildLogPositionLua());
             place(tabTools, btnLogPos, 0, yTools);
-            tabTools.Controls.Add(new Label { Text = "坐标", Location = new Point(123, yTools[0] + 6), Size = new Size(40, 20) });
-            txtCoordInput = new TextBox { Location = new Point(163, yTools[0] + 3), Size = new Size(150, 24), Text = "" };
+            tabTools.Controls.Add(new Label { Text = "坐标", Location = new Point(138, yTools[0] + 6), Size = new Size(40, 20) });
+            txtCoordInput = new TextBox { Location = new Point(178, yTools[0] + 3), Size = new Size(178, 24), Text = "" };
             tabTools.Controls.Add(txtCoordInput);
-            Button btnTeleportTo = new Button { Text = "传送", Location = new Point(318, yTools[0]), Size = new Size(60, 30) };
+            Button btnTeleportTo = new Button { Text = "传送", Location = new Point(366, yTools[0]), Size = new Size(74, 28) };
             btnTeleportTo.Click += (s, ev) => {
                 string coordText = txtCoordInput.Text.Trim();
                 if (string.IsNullOrEmpty(coordText)) { MessageBox.Show("请输入坐标，格式: x,y,z"); return; }
@@ -614,7 +968,7 @@ namespace FridaGMTool
 
             grpGM.Controls.Add(tabGM);
             Controls.Add(grpGM);
-            ClientSize = new Size(516, grpGM.Bottom + 4);
+            ClientSize = new Size(552, grpGM.Bottom + 8);
             UpdateCommPaths();
             EnsureBuffConfigFile();
             LoadConfig();
@@ -1294,6 +1648,7 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
             }
             commandResultTimer = new System.Windows.Forms.Timer { Interval = 1200 };
             int ticks = 0;
+            const int maxPollTicks = 60;
             EventHandler tickHandler = null;
             tickHandler = (s, e) => {
                 ticks++;
@@ -1315,14 +1670,15 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
                             else
                                 AppendLog("  " + line.Trim());
                         }
-                        ReadFeatureResult(name);
-                        finished = true;
+                        finished = !mmfResult.StartsWith("RUNNING", StringComparison.Ordinal);
+                        if (finished)
+                            ReadFeatureResult(name);
                     }
                     else
                     {
                         // 降级：从文件读结果
                         ReadCommandResult(name);
-                        if (ticks >= 5 || File.Exists(ToolResultFile) || File.Exists(ToolResultCompatFile))
+                        if (IsTerminalResultFile(CmdResultFile) || File.Exists(ToolResultFile) || File.Exists(ToolResultCompatFile) || ticks >= maxPollTicks)
                             finished = true;
                     }
                 }
@@ -1340,6 +1696,34 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
             };
             commandResultTimer.Tick += tickHandler;
             commandResultTimer.Start();
+        }
+
+        static bool IsTerminalCommandStatusLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return false;
+            string trimmed = line.Trim();
+            return trimmed.StartsWith("DONE", StringComparison.Ordinal)
+                || trimmed.StartsWith("LOAD_FAIL", StringComparison.Ordinal)
+                || trimmed.StartsWith("EXCEPTION", StringComparison.Ordinal)
+                || trimmed.StartsWith("DIAGNOSTIC", StringComparison.Ordinal);
+        }
+
+        static bool IsTerminalResultFile(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+                foreach (string line in File.ReadAllLines(path))
+                {
+                    if (IsTerminalCommandStatusLine(line))
+                        return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine("IsTerminalResultFile failed: " + ex.Message);
+            }
+            return false;
         }
 
         void ReadFeatureResult(string name)
@@ -3266,7 +3650,7 @@ end
         void ApplyCleanStyle()
         {
             Font = new Font("Microsoft YaHei UI", 9F);
-            BackColor = Color.FromArgb(246, 248, 250);
+            BackColor = Color.FromArgb(241, 245, 249);
             ApplyCleanStyleRecursive(this);
         }
 
@@ -3286,7 +3670,12 @@ end
                 Panel panel = control as Panel;
                 if (panel != null)
                 {
-                    panel.BackColor = Color.White;
+                    if (panel == grpGM || panel == tabGM)
+                        panel.BackColor = Color.White;
+                    else if (panel.Size.Height >= 100 && panel.Size.Width >= 300)
+                        panel.BackColor = Color.FromArgb(248, 250, 252);
+                    else
+                        panel.BackColor = Color.White;
                 }
 
                 Label label = control as Label;
@@ -3308,6 +3697,7 @@ end
                     {
                         button.BackColor = Color.White;
                     }
+                    button.Height = Math.Max(button.Height, 28);
                     button.UseVisualStyleBackColor = false;
                 }
 
@@ -3317,6 +3707,10 @@ end
                     textBox.BackColor = Color.White;
                     textBox.ForeColor = Color.FromArgb(31, 41, 55);
                     textBox.BorderStyle = BorderStyle.FixedSingle;
+                    if (textBox.Multiline)
+                    {
+                        textBox.Font = new Font("Consolas", 9F);
+                    }
                 }
 
                 ComboBox combo = control as ComboBox;
@@ -3404,38 +3798,7 @@ end
 
         void UpdateLogView()
         {
-            if (txtLog == null) return;
-            try
-            {
-                string combined = BuildCombinedLogText(12);
-                if (!string.IsNullOrEmpty(combined))
-                {
-                    txtLog.Text = combined;
-                    txtLog.SelectionStart = txtLog.Text.Length;
-                    txtLog.ScrollToCaret();
-                }
-            }
-            catch (Exception ex) { Debug.WriteLine("UpdateLogView failed: " + ex.Message); }
-        }
-
-        string BuildCombinedLogText(int maxLinesPerFile)
-        {
-            List<string> sections = new List<string>();
-            AddLogSection(sections, "Unified Log", UnifiedLogFile, maxLinesPerFile);
-            AddLogSection(sections, "Command Result", CmdResultFile, maxLinesPerFile);
-            AddLogSection(sections, "Feature Result", ToolResultFile, maxLinesPerFile);
-            return sections.Count > 0 ? string.Join("\r\n\r\n", sections.ToArray()) : "";
-        }
-
-        void AddLogSection(List<string> sections, string title, string path, int maxLines)
-        {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return;
-            string[] lines = File.ReadAllLines(path);
-            int start = Math.Max(0, lines.Length - maxLines);
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine("=== " + title + " ===");
-            for (int i = start; i < lines.Length; i++) sb.AppendLine(lines[i]);
-            sections.Add(sb.ToString().TrimEnd());
+            
         }
 
         string BuildUnifiedLogSnapshot()
@@ -3465,15 +3828,6 @@ end
         {
             string line = "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + msg;
             try { File.AppendAllText(UnifiedLogFile, line + Environment.NewLine, new UTF8Encoding(false)); } catch (Exception ex) { Debug.WriteLine("AppendLog write failed: " + ex.Message); }
-            if (txtLog != null)
-            {
-                try
-                {
-                    if (txtLog.InvokeRequired) txtLog.BeginInvoke(new Action(UpdateLogView));
-                    else UpdateLogView();
-                }
-                catch (Exception ex) { Debug.WriteLine("AppendLog UI refresh failed: " + ex.Message); }
-            }
         }
 
         void SaveConfig() { try { File.WriteAllText(ConfigFile, gameRootPath); } catch (Exception ex) { Debug.WriteLine("SaveConfig failed: " + ex.Message); } }
@@ -3533,6 +3887,10 @@ end
         [STAThread]
         static void Main(string[] args)
         {
+            EnsureModernTls();
+            CleanupLegacyManifestFiles();
+            StartupManifest = LoadStartupManifest();
+            if (!EnsureVersionAllowed(StartupManifest)) return;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 

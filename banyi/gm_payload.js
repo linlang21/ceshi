@@ -1,5 +1,6 @@
 'use strict';
-var TOOL_DIR = "E:\\ceshi\\7\\FridaGM";
+// TOOL_DIR 由打包阶段 EnsurePayloadToolDir() 注入实际路径；源文件保持占位符以避免泄漏开发机路径
+var TOOL_DIR = "__TOOL_DIR__";
 
 var WORK_DIR = ".";
 try {
@@ -12,7 +13,8 @@ try {
     }
 } catch (e) {}
 
-var TOOL_ROOT = (typeof TOOL_DIR === 'string' && TOOL_DIR.length > 0) ? TOOL_DIR : WORK_DIR;
+// 占位符未被替换时回退到 WORK_DIR，避免把字面量 "__TOOL_DIR__" 当真实路径
+var TOOL_ROOT = (typeof TOOL_DIR === 'string' && TOOL_DIR.length > 0 && TOOL_DIR.indexOf('__TOOL_DIR__') < 0) ? TOOL_DIR : WORK_DIR;
 
 // 默认文件名（svc.cfg存在时会被覆盖）
 var LOG_FILE = TOOL_ROOT + "\\gm_tool.log";

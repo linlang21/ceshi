@@ -1,0 +1,10 @@
+# 上传到服务器的版本清单模板
+# 建议 URL:
+# https://fz.wk110.top/fridagm/version_manifest.txt
+latest_version=1.1
+min_supported_version=1.1
+notice=当前版本：v1.1\n测试版本，仅限单人世界使用。
+download_url=https://fz.wk110.top/fridagm/FridaGMTool_v1.1_单文件版.exe
+block_message=当前版本已停用，请更新到最新版后再使用。
+block_on_manifest_error=true
+cache_max_age_minutes=180
