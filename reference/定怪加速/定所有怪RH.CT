@@ -1,0 +1,791 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable XiongMaoineTableVersion="45">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1337183399</ID>
+      <Description>"定所有按8键 等两秒按两下 9键解自己  关闭定所有0键"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>{ Game   : yysls.exe
+  Version:
+  Date   : 2026-01-29
+  Author : Administrator
+
+  This script does blah blah blah
+}
+
+[ENABLE]
+
+aobscanmodule(INJECT,yysls.exe,C5 FA 10 55 64) // should be unique
+alloc(newmem,$1000,INJECT)
+
+label(code)
+label(return)
+
+newmem:
+ mov [rbp+64],(float)0.01
+code:
+  vmovss xmm2,[rbp+64]
+  jmp return
+
+INJECT:
+  jmp newmem
+return:
+registersymbol(INJECT)
+
+[DISABLE]
+
+INJECT:
+  db C5 FA 10 55 64
+
+unregistersymbol(INJECT)
+dealloc(newmem)
+
+{
+// ORIGINAL CODE - INJECTION POINT: INJECT
+
+yysls.exe+B72B62: 75 BC                    - jne yysls.exe+B72B20
+yysls.exe+B72B64: EB 18                    - jmp yysls.exe+B72B7E
+yysls.exe+B72B66: C5 F3 5C C2              - vsubsd xmm0,xmm1,xmm2
+yysls.exe+B72B6A: C5 FB 58 CF              - vaddsd xmm1,xmm0,xmm7
+yysls.exe+B72B6E: C5 C3 5E D9              - divsd xmm3,xmm7,xmm1
+yysls.exe+B72B72: C5 DB 5C D6              - vsubsd xmm2,xmm4,xmm6
+yysls.exe+B72B76: C5 EB 59 C3              - vmulsd xmm0,xmm2,xmm3
+yysls.exe+B72B7A: C5 CB 58 F0              - vaddsd xmm6,xmm6,xmm0
+yysls.exe+B72B7E: C5 CB 5A C6              - vcvtsd2ss xmm0,xmm6,xmm6
+yysls.exe+B72B82: C5 FA 11 45 68           - vmovss [rbp+68],xmm0
+// ---------- INJECTING HERE ----------
+INJECT: C5 FA 10 55 64           - vmovss xmm2,[rbp+64]
+// ---------- DONE INJECTING  ----------
+yysls.exe+B72B8C: C5 FA 10 0D 4C AB E8 03  - vmovss xmm1,[yysls.D3D12SDKVersion+33D8]
+yysls.exe+B72B94: C5 F8 2F CA              - vcomiss xmm1,xmm2
+yysls.exe+B72B98: 76 04                    - jna yysls.exe+B72B9E
+yysls.exe+B72B9A: C5 EA 5A F2              - vcvtss2sd xmm6,xmm2,xmm2
+yysls.exe+B72B9E: C5 CB 5A CE              - vcvtsd2ss xmm1,xmm6,xmm6
+yysls.exe+B72BA2: C5 FA 10 85 A0 01 00 00  - vmovss xmm0,[rbp+000001A0]
+yysls.exe+B72BAA: C5 F8 2E C1              - vucomiss xmm0,xmm1
+yysls.exe+B72BAE: 7A 02                    - jp yysls.exe+B72BB2
+yysls.exe+B72BB0: 74 10                    - je yysls.exe+B72BC2
+yysls.exe+B72BB2: C5 FA 11 8D A0 01 00 00  - vmovss [rbp+000001A0],xmm1
+}
+</AssemblerScript>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Activate</Action>
+          <Keys>
+            <Key>56</Key>
+          </Keys>
+          <ID>0</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Deactivate</Action>
+          <Keys>
+            <Key>57</Key>
+          </Keys>
+          <ID>1</ID>
+        </Hotkey>
+      </Hotkeys>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>1337183406</ID>
+          <Description>"自己 若不能定重置在试"</Description>
+          <Options moRecursiveSetValue="1"/>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Float</VariableType>
+          <Address>"yysls.exe"+07D31D10</Address>
+          <Offsets>
+            <Offset>64</Offset>
+            <Offset>18</Offset>
+            <Offset>140</Offset>
+            <Offset>148</Offset>
+            <Offset>90</Offset>
+            <Offset>40</Offset>
+          </Offsets>
+          <Hotkeys>
+            <Hotkey>
+              <Action>Set Value</Action>
+              <Keys>
+                <Key>57</Key>
+              </Keys>
+              <Value>1</Value>
+              <ID>0</ID>
+            </Hotkey>
+          </Hotkeys>
+          <CheatEntries>
+            <CheatEntry>
+              <ID>1337183423</ID>
+              <Description>"自"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+7CF4CD0+E0</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>0</Offset>
+                <Offset>40</Offset>
+                <Offset>68</Offset>
+                <Offset>18</Offset>
+                <Offset>0</Offset>
+                <Offset>48</Offset>
+              </Offsets>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183450</ID>
+              <Description>"狮子等.5开6关"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+7CF4CD0+E0</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>0</Offset>
+                <Offset>40</Offset>
+                <Offset>68</Offset>
+                <Offset>18</Offset>
+                <Offset>0</Offset>
+                <Offset>88</Offset>
+              </Offsets>
+              <Hotkeys>
+                <Hotkey>
+                  <Action>Set Value</Action>
+                  <Keys>
+                    <Key>53</Key>
+                  </Keys>
+                  <Value>0</Value>
+                  <ID>0</ID>
+                </Hotkey>
+                <Hotkey>
+                  <Action>Set Value</Action>
+                  <Keys>
+                    <Key>54</Key>
+                  </Keys>
+                  <Value>1</Value>
+                  <ID>1</ID>
+                </Hotkey>
+              </Hotkeys>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183457</ID>
+              <Description>"自"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+7CF4CD0+E0</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>0</Offset>
+                <Offset>40</Offset>
+                <Offset>68</Offset>
+                <Offset>18</Offset>
+                <Offset>0</Offset>
+                <Offset>C8</Offset>
+              </Offsets>
+              <Hotkeys>
+                <Hotkey>
+                  <Action>Set Value</Action>
+                  <Keys>
+                    <Key>53</Key>
+                  </Keys>
+                  <Value>0</Value>
+                  <ID>0</ID>
+                </Hotkey>
+                <Hotkey>
+                  <Action>Set Value</Action>
+                  <Keys>
+                    <Key>54</Key>
+                  </Keys>
+                  <Value>1</Value>
+                  <ID>1</ID>
+                </Hotkey>
+              </Hotkeys>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183491</ID>
+              <Description>"自己"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+07D31D10</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>0</Offset>
+                <Offset>40</Offset>
+                <Offset>4D8</Offset>
+                <Offset>8</Offset>
+                <Offset>18</Offset>
+                <Offset>40</Offset>
+              </Offsets>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183456</ID>
+              <Description>"自2"</Description>
+              <Options moRecursiveSetValue="1"/>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+07D31D10</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>140</Offset>
+                <Offset>140</Offset>
+                <Offset>148</Offset>
+                <Offset>90</Offset>
+                <Offset>40</Offset>
+              </Offsets>
+              <Hotkeys>
+                <Hotkey>
+                  <Action>Set Value</Action>
+                  <Keys>
+                    <Key>57</Key>
+                  </Keys>
+                  <Value>1</Value>
+                  <ID>0</ID>
+                </Hotkey>
+              </Hotkeys>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183477</ID>
+              <Description>"画面1"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+07D31D10</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>40</Offset>
+                <Offset>A8</Offset>
+                <Offset>120</Offset>
+                <Offset>B8</Offset>
+                <Offset>230</Offset>
+              </Offsets>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183478</ID>
+              <Description>"画面2"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+07D31D10</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>218</Offset>
+                <Offset>90</Offset>
+                <Offset>88</Offset>
+                <Offset>40</Offset>
+                <Offset>230</Offset>
+                <Offset>458</Offset>
+              </Offsets>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>1337183479</ID>
+              <Description>"人动"</Description>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>Float</VariableType>
+              <Address>"yysls.exe"+07D31D10</Address>
+              <Offsets>
+                <Offset>64</Offset>
+                <Offset>0</Offset>
+                <Offset>140</Offset>
+                <Offset>218</Offset>
+                <Offset>98</Offset>
+                <Offset>40</Offset>
+              </Offsets>
+            </CheatEntry>
+          </CheatEntries>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183473</ID>
+      <Description>"0关"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>{ Game   : yysls.exe
+  Version:
+  Date   : 2026-01-29
+  Author : Administrator
+
+  This script does blah blah blah
+}
+
+[ENABLE]
+
+aobscanmodule(INJECT,yysls.exe,C5 FA 10 55 64) // should be unique
+alloc(newmem,$1000,INJECT)
+
+label(code)
+label(return)
+
+newmem:
+ mov [rbp+64],(float)1
+code:
+  vmovss xmm2,[rbp+64]
+  jmp return
+
+INJECT:
+  jmp newmem
+return:
+registersymbol(INJECT)
+
+[DISABLE]
+
+INJECT:
+  db C5 FA 10 55 64
+
+unregistersymbol(INJECT)
+dealloc(newmem)
+
+{
+// ORIGINAL CODE - INJECTION POINT: INJECT
+
+yysls.exe+B72B62: 75 BC                    - jne yysls.exe+B72B20
+yysls.exe+B72B64: EB 18                    - jmp yysls.exe+B72B7E
+yysls.exe+B72B66: C5 F3 5C C2              - vsubsd xmm0,xmm1,xmm2
+yysls.exe+B72B6A: C5 FB 58 CF              - vaddsd xmm1,xmm0,xmm7
+yysls.exe+B72B6E: C5 C3 5E D9              - divsd xmm3,xmm7,xmm1
+yysls.exe+B72B72: C5 DB 5C D6              - vsubsd xmm2,xmm4,xmm6
+yysls.exe+B72B76: C5 EB 59 C3              - vmulsd xmm0,xmm2,xmm3
+yysls.exe+B72B7A: C5 CB 58 F0              - vaddsd xmm6,xmm6,xmm0
+yysls.exe+B72B7E: C5 CB 5A C6              - vcvtsd2ss xmm0,xmm6,xmm6
+yysls.exe+B72B82: C5 FA 11 45 68           - vmovss [rbp+68],xmm0
+// ---------- INJECTING HERE ----------
+INJECT: C5 FA 10 55 64           - vmovss xmm2,[rbp+64]
+// ---------- DONE INJECTING  ----------
+yysls.exe+B72B8C: C5 FA 10 0D 4C AB E8 03  - vmovss xmm1,[yysls.D3D12SDKVersion+33D8]
+yysls.exe+B72B94: C5 F8 2F CA              - vcomiss xmm1,xmm2
+yysls.exe+B72B98: 76 04                    - jna yysls.exe+B72B9E
+yysls.exe+B72B9A: C5 EA 5A F2              - vcvtss2sd xmm6,xmm2,xmm2
+yysls.exe+B72B9E: C5 CB 5A CE              - vcvtsd2ss xmm1,xmm6,xmm6
+yysls.exe+B72BA2: C5 FA 10 85 A0 01 00 00  - vmovss xmm0,[rbp+000001A0]
+yysls.exe+B72BAA: C5 F8 2E C1              - vucomiss xmm0,xmm1
+yysls.exe+B72BAE: 7A 02                    - jp yysls.exe+B72BB2
+yysls.exe+B72BB0: 74 10                    - je yysls.exe+B72BC2
+yysls.exe+B72BB2: C5 FA 11 8D A0 01 00 00  - vmovss [rbp+000001A0],xmm1
+}
+</AssemblerScript>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Activate</Action>
+          <Keys>
+            <Key>48</Key>
+          </Keys>
+          <ID>0</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Deactivate</Action>
+          <Keys>
+            <Key>56</Key>
+          </Keys>
+          <ID>1</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183511</ID>
+      <Description>"新速1-单本人物速度1-数值勿超过2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>68</Offset>
+        <Offset>0</Offset>
+        <Offset>40</Offset>
+        <Offset>40</Offset>
+        <Offset>90</Offset>
+        <Offset>230</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183472</ID>
+      <Description>"新速2 (勿与其他速度类同时开)-数值勿超过2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <Color>0000FF</Color>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>68C</Offset>
+        <Offset>2F8</Offset>
+        <Offset>30</Offset>
+        <Offset>0</Offset>
+        <Offset>60</Offset>
+        <Offset>230</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183375</ID>
+      <Description>"世界速度2 (勿与其他速度类同时开)-数值勿超过2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>68</Offset>
+        <Offset>40</Offset>
+        <Offset>A8</Offset>
+        <Offset>120</Offset>
+        <Offset>B8</Offset>
+        <Offset>230</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>21</ID>
+      <Description>"单速(收武器和坐骑有效)锁定 -数值勿超过18"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>838</Offset>
+        <Offset>18</Offset>
+        <Offset>250</Offset>
+        <Offset>98</Offset>
+        <Offset>20</Offset>
+        <Offset>2E8</Offset>
+        <Offset>28</Offset>
+        <Offset>58</Offset>
+        <Offset>2F8</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>46</ID>
+      <Description>"人高速快 改0可无"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>68</Offset>
+        <Offset>40</Offset>
+        <Offset>8</Offset>
+        <Offset>460</Offset>
+        <Offset>230</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183529</ID>
+      <Description>"1"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>88</Offset>
+        <Offset>20</Offset>
+        <Offset>210</Offset>
+        <Offset>10</Offset>
+        <Offset>8</Offset>
+        <Offset>38</Offset>
+        <Offset>8</Offset>
+        <Offset>58</Offset>
+      </Offsets>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>67</ID>
+      <Description>"世界1-"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>68</Offset>
+        <Offset>218</Offset>
+        <Offset>98</Offset>
+        <Offset>40</Offset>
+        <Offset>90</Offset>
+        <Offset>230</Offset>
+      </Offsets>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Set Value</Action>
+          <Keys/>
+          <Value>0.25</Value>
+          <ID>0</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Set Value</Action>
+          <Keys/>
+          <Value>1</Value>
+          <ID>1</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Activate</Action>
+          <Keys/>
+          <ID>2</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Deactivate</Action>
+          <Keys/>
+          <ID>3</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183508</ID>
+      <Description>"世界1-22"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Float</VariableType>
+      <Address>"yysls.exe"+07D31D10</Address>
+      <Offsets>
+        <Offset>4A8</Offset>
+        <Offset>218</Offset>
+        <Offset>98</Offset>
+        <Offset>40</Offset>
+        <Offset>90</Offset>
+        <Offset>230</Offset>
+      </Offsets>
+      <Hotkeys>
+        <Hotkey>
+          <Action>Set Value</Action>
+          <Keys/>
+          <Value>0.25</Value>
+          <ID>0</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Set Value</Action>
+          <Keys/>
+          <Value>1</Value>
+          <ID>1</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Activate</Action>
+          <Keys/>
+          <ID>2</ID>
+        </Hotkey>
+        <Hotkey>
+          <Action>Deactivate</Action>
+          <Keys/>
+          <ID>3</ID>
+        </Hotkey>
+      </Hotkeys>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183458</ID>
+      <Description>"Q2499221016"</Description>
+      <Color>008000</Color>
+      <GroupHeader>1</GroupHeader>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183496</ID>
+      <Description>"去草"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>{ Game   : wwm.exe
+  Version: 
+  Date   : 2025-11-20
+  Author : Administrator
+
+  This script does blah blah blah
+}
+
+[ENABLE]
+
+aobscanmodule(nINJECT,yysls.exe,F6 80 ?? ?? 00 00 60) // should be unique
+alloc(newmem,$1000,nINJECT)
+
+label(code)
+label(return)
+registersymbol(D1Z)
+alloc(D1Z,4)
+newmem:
+mov [D1Z],rax
+code:
+  test byte ptr [rax+0000970F],60
+  jmp return
+
+nINJECT:
+  jmp newmem
+  nop 2
+return:
+registersymbol(nINJECT)
+
+[DISABLE]
+
+nINJECT:
+  db F6 80 ?? ?? 00 00 60
+
+unregistersymbol(nINJECT)）
+
+dealloc(newmem)
+dealloc(D1Z)
+
+{
+// ORIGINAL CODE - INJECTION POINT: wwm.exe+5C6828
+
+wwm.exe+5C67E7: C5 78 29 9C 24 B0 0F 00 00  - vmovaps [rsp+00000FB0],xmm11
+wwm.exe+5C67F0: C5 78 29 A4 24 A0 0F 00 00  - vmovaps [rsp+00000FA0],xmm12
+wwm.exe+5C67F9: C5 78 29 AC 24 90 0F 00 00  - vmovaps [rsp+00000F90],xmm13
+wwm.exe+5C6802: C5 78 29 B4 24 80 0F 00 00  - vmovaps [rsp+00000F80],xmm14
+wwm.exe+5C680B: C5 F8 28 F2                 - vmovaps xmm6,xmm2
+wwm.exe+5C680F: 48 8B FA                    - mov rdi,rdx
+wwm.exe+5C6812: 48 8B F1                    - mov rsi,rcx
+wwm.exe+5C6815: 4C 8B B1 80 03 00 00        - mov r14,[rcx+00000380]
+wwm.exe+5C681C: 4C 89 74 24 50              - mov [rsp+50],r14
+wwm.exe+5C6821: 48 8B 05 58 A9 ED 05        - mov rax,[wwm.exe+64A1180]
+// ---------- INJECTING HERE ----------
+wwm.exe+5C6828: F6 80 60 15 00 00 60        - test byte ptr [rax+000015B8],60
+// ---------- DONE INJECTING  ----------
+wwm.exe+5C682F: 0F 85 10 16 00 00           - jne wwm.exe+5C7E45
+wwm.exe+5C6835: 48 8B 89 70 03 00 00        - mov rcx,[rcx+00000370]
+wwm.exe+5C683C: E8 9F 9C 07 00              - call wwm.exe+6404E0
+wwm.exe+5C6841: 84 C0                       - test al,al
+wwm.exe+5C6843: 75 14                       - jne wwm.exe+5C6859
+wwm.exe+5C6845: 48 8B 86 70 03 00 00        - mov rax,[rsi+00000370]
+wwm.exe+5C684C: F6 80 89 01 00 00 20        - test byte ptr [rax+00000189],20
+wwm.exe+5C6853: 0F 84 EC 15 00 00           - je wwm.exe+5C7E45
+wwm.exe+5C6859: 48 8B 8E 70 03 00 00        - mov rcx,[rsi+00000370]
+wwm.exe+5C6860: 41 0F B6 86 79 04 00 00     - movzx eax,byte ptr [r14+00000479]
+}
+</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>1337183498</ID>
+          <Description>"去草64、去草木192"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Byte</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>970F</Offset>
+          </Offsets>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>1337183517</ID>
+      <Description>"坐标-"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>{ Game   : yysls.exe
+  Version: 
+  Date   : 2026-04-16
+  Author : Administrator
+
+  This script does blah blah blah
+}
+
+[ENABLE]
+
+aobscanmodule(INJECT,yysls.exe,C5 F8 11 83 40 03 00 00 C4) // should be unique
+alloc(newmem,$1000,INJECT)
+registersymbol(D1Z)
+alloc(D1Z,4)
+label(code)
+label(return)
+
+newmem:
+ cmp [rbx+00000054],0
+ jne code
+ mov [D1Z],rbx
+code:
+  vmovups [rbx+00000340],xmm0
+  jmp return
+
+INJECT:
+  jmp newmem
+  nop 3
+return:
+registersymbol(INJECT)
+
+[DISABLE]
+
+INJECT:
+  db C5 F8 11 83 40 03 00 00
+
+unregistersymbol(INJECT)
+dealloc(newmem)
+dealloc(D1Z)
+{
+// ORIGINAL CODE - INJECTION POINT: yysls.exe+2FECB9C
+
+yysls.exe+2FECB62: EB 0A                    - jmp yysls.exe+2FECB6E
+yysls.exe+2FECB64: C4 C1 78 28 C4           - vmovaps xmm0,xmm12
+yysls.exe+2FECB69: C4 C1 78 28 CC           - vmovaps xmm1,xmm12
+yysls.exe+2FECB6E: C5 FA 11 8B 04 03 00 00  - vmovss [rbx+00000304],xmm1
+yysls.exe+2FECB76: C5 FA 11 83 08 03 00 00  - vmovss [rbx+00000308],xmm0
+yysls.exe+2FECB7E: C5 7A 11 A3 0C 03 00 00  - vmovss [rbx+0000030C],xmm12
+yysls.exe+2FECB86: 48 8B BD 38 04 00 00     - mov rdi,[rbp+00000438]
+yysls.exe+2FECB8D: 0F B6 07                 - movzx eax,byte ptr [rdi]
+yysls.exe+2FECB90: 88 83 F0 03 00 00        - mov [rbx+000003F0],al
+yysls.exe+2FECB96: C4 C1 78 10 45 00        - vmovups xmm0,[r13+00]
+// ---------- INJECTING HERE ----------
+yysls.exe+2FECB9C: C5 F8 11 83 40 03 00 00  - vmovups [rbx+00000340],xmm0
+// ---------- DONE INJECTING  ----------
+yysls.exe+2FECBA4: C4 C1 7B 10 4D 10        - vmovsd xmm1,[r13+10]
+yysls.exe+2FECBAA: C5 FB 11 8B 50 03 00 00  - vmovsd [rbx+00000350],xmm1
+yysls.exe+2FECBB2: 48 8D 8B 18 03 00 00     - lea rcx,[rbx+00000318]
+yysls.exe+2FECBB9: 41 B8 FF FF FF FF        - mov r8d,FFFFFFFF
+yysls.exe+2FECBBF: 8B 95 98 01 00 00        - mov edx,[rbp+00000198]
+yysls.exe+2FECBC5: E8 36 60 EC FE           - call yysls.exe+1EB2C00
+yysls.exe+2FECBCA: 90                       - nop 
+yysls.exe+2FECBCB: 8B 45 A0                 - mov eax,[rbp-60]
+yysls.exe+2FECBCE: A9 FF FF FF 7F           - test eax,7FFFFFFF
+yysls.exe+2FECBD3: 74 23                    - je yysls.exe+2FECBF8
+}
+</AssemblerScript>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>1337183528</ID>
+          <Description>"0"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Float</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>46C</Offset>
+          </Offsets>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>1337183527</ID>
+          <Description>"0"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Float</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>38</Offset>
+          </Offsets>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>1337183526</ID>
+          <Description>"人物坐标高度 -关1 +开3.2"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Float</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>28</Offset>
+          </Offsets>
+          <Hotkeys>
+            <Hotkey>
+              <Action>Set Value</Action>
+              <Keys>
+                <Key>109</Key>
+              </Keys>
+              <Value>1</Value>
+              <ID>0</ID>
+            </Hotkey>
+            <Hotkey>
+              <Action>Set Value</Action>
+              <Keys>
+                <Key>107</Key>
+              </Keys>
+              <Value>3.2</Value>
+              <ID>1</ID>
+            </Hotkey>
+          </Hotkeys>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>1337183524</ID>
+          <Description>"X"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Double</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>340</Offset>
+          </Offsets>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>1337183520</ID>
+          <Description>"Y"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Double</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>350</Offset>
+          </Offsets>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>1337183519</ID>
+          <Description>"Z"</Description>
+          <ShowAsSigned>0</ShowAsSigned>
+          <VariableType>Double</VariableType>
+          <Address>D1Z</Address>
+          <Offsets>
+            <Offset>348</Offset>
+          </Offsets>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+  </CheatEntries>
+  <UserdefinedSymbols/>
+</CheatTable>

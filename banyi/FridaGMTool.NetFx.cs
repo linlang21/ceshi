@@ -227,6 +227,86 @@ namespace FridaGMTool
         static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
         [DllImport("kernel32.dll")]
         static extern bool GetExitCodeThread(IntPtr hThread, out uint lpExitCode);
+        // ===== 按键模拟 (PostMessageW 方案, 绕过游戏位移回滚) =====
+        // 关键发现: AAA.exe 用 PostMessageW 而非 SendInput, 可后台发消息无需游戏前台
+        // banyi 早期用 SendInput 会被游戏拉回, 改用 PostMessageW 对齐 AAA 行为
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+        [DllImport("user32.dll")]
+        static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+        static extern IntPtr FindWindowA(string lpClassName, string lpWindowName);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool PostMessageW(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr FindWindowW(string lpClassName, string lpWindowName);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern int GetWindowTextW(IntPtr hWnd, System.Text.StringBuilder lpString, int nMaxCount);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        const uint INPUT_KEYBOARD = 1;
+        const uint KEYEVENTF_KEYUP = 0x0002;
+        const ushort VK_SPACE = 0x20;
+        const ushort VK_Q = 0x51;
+        const uint WM_KEYDOWN = 0x0100;
+        const uint WM_KEYUP = 0x0101;
+        const uint WM_SYSKEYDOWN = 0x0104;
+        const uint WM_SYSKEYUP = 0x0105;
+
+        // ===== 低级键盘钩子 (WH_KEYBOARD_LL, 全局监听, 游戏前台也能捕获) =====
+        // 用于"飞天遁地"和"瞬移"模式: 勾选后监听小键盘上下/Alt+方向键触发微调传送
+        const int WH_KEYBOARD_LL = 13;
+        const uint WM_KEYDOWN_LL = 0x0100;
+        const uint WM_KEYUP_LL = 0x0101;
+        const uint WM_SYSKEYDOWN_LL = 0x0104;
+        const uint WM_SYSKEYUP_LL = 0x0105;
+        const ushort VK_UP = 0x26;
+        const ushort VK_DOWN = 0x28;
+        const ushort VK_LEFT = 0x25;
+        const ushort VK_RIGHT = 0x27;
+        const ushort VK_MENU = 0x12;         // Alt
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool UnhookWindowsHookEx(IntPtr hhk);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+        delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        IntPtr nudgeKbHook = IntPtr.Zero;
+        bool flyModeEnabled = false;     // 飞天遁地: 小键盘上下瞬移
+        bool nudgeModeEnabled = false;   // 瞬移: Alt+方向键东南西北瞬移
+        // 防止按键长按连续触发 (一次按下只传送一次, 抬起后才能再次触发)
+        bool flyKeyUp = true, flyKeyDown = true;
+        bool nudgeKeyLeft = true, nudgeKeyRight = true, nudgeKeyUp = true, nudgeKeyDown = true;
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct INPUT
+        {
+            public uint type;
+            public INPUTUNION u;
+        }
+        [StructLayout(LayoutKind.Explicit)]
+        struct INPUTUNION
+        {
+            [FieldOffset(0)] public KEYBDINPUT ki;
+        }
+        [StructLayout(LayoutKind.Sequential)]
+        struct KEYBDINPUT
+        {
+            public ushort wVk;
+            public ushort wScan;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
         [DllImport("ntdll.dll")]
         static extern int NtQueryInformationProcess(IntPtr processHandle, int processInformationClass, byte[] processInformation, int processInformationLength, out int returnLength);
         const uint MEM_COMMIT = 0x1000;
@@ -277,7 +357,9 @@ namespace FridaGMTool
         TextBox txtDialogSpeed;
         TextBox txtCoordInput;
         DataGridView dgvCoords;
-        TextBox txtCoordX, txtCoordZ, txtCoordY, txtCoordRemark, txtCoordFileName;
+        TextBox txtCoordRemark, txtCoordFileName;
+        Label lblLiveCoord;  // 实时坐标显示 (替代原 X/Y/Z 输入框, 实时刷新)
+        System.Windows.Forms.Timer liveCoordTimer;  // 实时坐标刷新定时器
         CheckBox chkEnableMemory;
         Label lblNotice;
         System.Windows.Forms.Timer readyPollTimer;
@@ -833,6 +915,10 @@ namespace FridaGMTool
             lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(492, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) };
             tabInit.Controls.Add(lblStatus);
             yInit[0] += 22;
+            Button btnInitCoordHook = new Button { Text = "初始化内存", Location = new Point(12, yInit[0]), Size = new Size(130, 26), Tag = "init" };
+            btnInitCoordHook.Click += (s, ev) => InitCoordHook();
+            tabInit.Controls.Add(btnInitCoordHook);
+            yInit[0] += 30;
             chkEnableMemory = new CheckBox { Text = "启用内存功能", Location = new Point(12, yInit[0]), Size = new Size(130, 22), ForeColor = Color.FromArgb(192, 0, 0), Checked = false };
             chkEnableMemory.CheckedChanged += chkEnableMemory_CheckedChanged;
             tabInit.Controls.Add(chkEnableMemory);
@@ -933,7 +1019,7 @@ namespace FridaGMTool
 
             dgvCoords = new DataGridView {
                 Location = new Point(12, yCoord[0]),
-                Size = new Size(500, 110),
+                Size = new Size(360, 330),
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = true,
                 ReadOnly = false,
@@ -941,8 +1027,8 @@ namespace FridaGMTool
                 MultiSelect = false,
                 RowHeadersVisible = false,
                 BackgroundColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle,
-                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
+                BorderStyle = BorderStyle.None,
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 Font = new Font("Microsoft YaHei UI", 9F),
                 Tag = "mem"
@@ -952,93 +1038,92 @@ namespace FridaGMTool
             dgvCoords.Columns.Add("colY", "Y");
             dgvCoords.Columns.Add("colZ", "Z");
             dgvCoords.Columns.Add("colRemark", "备注");
+            dgvCoords.RowTemplate.Height = 20;
+            dgvCoords.ColumnHeadersHeight = 22;
             dgvCoords.Columns[0].FillWeight = 50;
             dgvCoords.Columns[1].FillWeight = 80;
-            dgvCoords.Columns[2].FillWeight = 80;
-            dgvCoords.Columns[3].FillWeight = 80;
-            dgvCoords.Columns[4].FillWeight = 120;
+            dgvCoords.Columns[2].Visible = false;  // 隐藏 Y, 节省空间
+            dgvCoords.Columns[3].Visible = false;  // 隐藏 Z, 节省空间
+            dgvCoords.Columns[4].FillWeight = 200;
             tabCoord.Controls.Add(dgvCoords);
-            yCoord[0] += 116;
+            int listRightX = 12 + 360 + 8;
+            int listBtnW = 110, listBtnH = 28;
+            // 实时坐标显示 (放选择文件按钮上方, 只显示 xyz 数值)
+            lblLiveCoord = new Label { Text = "X=--  Y=--  Z=--", Location = new Point(listRightX, yCoord[0]), Size = new Size(listBtnW, 20), ForeColor = Color.Blue, Tag = "mem" };
+            tabCoord.Controls.Add(lblLiveCoord);
+            int dgvTopY = yCoord[0] + 24;
+            yCoord[0] = dgvTopY + 330 + 8;
 
-            int midY = yCoord[0];
-            int btnW = 120, btnH = 26;
-            Button btnSelectCoordFile = new Button { Text = "选择坐标文本", Location = new Point(12, midY), Size = new Size(btnW, btnH), Tag = "mem" };
+            int btnH = 26;
+            Button btnSelectCoordFile = new Button { Text = "选择文件", Location = new Point(listRightX, dgvTopY), Size = new Size(listBtnW, listBtnH), Tag = "mem" };
             btnSelectCoordFile.Click += (s, ev) => SelectCoordFile();
             tabCoord.Controls.Add(btnSelectCoordFile);
 
-            Button btnOpenCoordFile = new Button { Text = "打开坐标文本", Location = new Point(12 + btnW + 8, midY), Size = new Size(btnW, btnH), Tag = "mem" };
-            btnOpenCoordFile.Click += (s, ev) => OpenCoordFile();
-            tabCoord.Controls.Add(btnOpenCoordFile);
-
-            int opBtnW = 100, opGap = 6;
-            Button btnReadPos = new Button { Text = "读取当前", Location = new Point(12 + (btnW + 8) * 2, midY), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            int opGap = 6;
+            Button btnReadPos = new Button { Text = "读取当前", Location = new Point(listRightX, dgvTopY + (listBtnH + 4) * 2), Size = new Size(listBtnW, listBtnH), Tag = "mem" };
             btnReadPos.Click += (s, ev) => ReadAndFillPosition();
             tabCoord.Controls.Add(btnReadPos);
 
-            midY += btnH + 4;
-            yCoord[0] = midY;
-
-            addTabSection(tabCoord, "坐标保存", yCoord);
-
             int inputY = yCoord[0];
-            int lblW = 24, inputW = 80, inputH = 22;
-            tabCoord.Controls.Add(new Label { Text = "X:", Location = new Point(12, inputY + 3), Size = new Size(lblW, 20), Tag = "mem" });
-            txtCoordX = new TextBox { Location = new Point(36, inputY + 1), Size = new Size(inputW, inputH), Text = "", Tag = "mem" };
-            tabCoord.Controls.Add(txtCoordX);
-
-            tabCoord.Controls.Add(new Label { Text = "Y:", Location = new Point(124, inputY + 3), Size = new Size(lblW, 20), Tag = "mem" });
-            txtCoordY = new TextBox { Location = new Point(148, inputY + 1), Size = new Size(inputW, inputH), Text = "", Tag = "mem" };
-            tabCoord.Controls.Add(txtCoordY);
-
-            tabCoord.Controls.Add(new Label { Text = "Z:", Location = new Point(236, inputY + 3), Size = new Size(lblW, 20), Tag = "mem" });
-            txtCoordZ = new TextBox { Location = new Point(260, inputY + 1), Size = new Size(inputW, inputH), Text = "", Tag = "mem" };
-            tabCoord.Controls.Add(txtCoordZ);
-
-            tabCoord.Controls.Add(new Label { Text = "备注:", Location = new Point(348, inputY + 3), Size = new Size(36, 20), Tag = "mem" });
-            txtCoordRemark = new TextBox { Location = new Point(388, inputY + 1), Size = new Size(124, inputH), Text = "示例", Tag = "mem" };
+            int inputH = 22;
+            tabCoord.Controls.Add(new Label { Text = "备注:", Location = new Point(12, inputY + 3), Size = new Size(36, 20), Tag = "mem" });
+            txtCoordRemark = new TextBox { Location = new Point(52, inputY + 1), Size = new Size(120, inputH), Text = "示例", Tag = "mem" };
             tabCoord.Controls.Add(txtCoordRemark);
 
-            inputY += inputH + 4;
-            tabCoord.Controls.Add(new Label { Text = "文件名:", Location = new Point(12, inputY + 3), Size = new Size(52, 20), Tag = "mem" });
-            txtCoordFileName = new TextBox { Location = new Point(68, inputY + 1), Size = new Size(140, inputH), Text = "示例", Tag = "mem" };
+            tabCoord.Controls.Add(new Label { Text = "文件名:", Location = new Point(180, inputY + 3), Size = new Size(52, 20), Tag = "mem" });
+            txtCoordFileName = new TextBox { Location = new Point(236, inputY + 1), Size = new Size(140, inputH), Text = "示例", Tag = "mem" };
             tabCoord.Controls.Add(txtCoordFileName);
 
-            Button btnSaveToDesktop = new Button { Text = "保存到桌面", Location = new Point(218, inputY - 1), Size = new Size(100, inputH + 4), Tag = "mem" };
+            Button btnSaveToDesktop = new Button { Text = "保存到桌面", Location = new Point(382, inputY - 1), Size = new Size(100, inputH + 4), Tag = "mem" };
             btnSaveToDesktop.Click += (s, ev) => SaveCurrentCoordToDesktop();
             tabCoord.Controls.Add(btnSaveToDesktop);
 
             inputY += inputH + 6;
 
-            Button btnSetCurrent = new Button { Text = "设为当前", Location = new Point(12, inputY), Size = new Size(opBtnW, btnH), Tag = "mem" };
-            btnSetCurrent.Click += (s, ev) => SetCustomCurrent();
-            tabCoord.Controls.Add(btnSetCurrent);
+            // 左按钮: 传送到上一条坐标 (AAA 辅助风格)
+            Button btnTeleportPrev = new Button { Text = "← 传送上一条", Location = new Point(12, inputY), Size = new Size(100, btnH), Tag = "mem" };
+            btnTeleportPrev.Click += (s, ev) => TeleportAdjacent(-1);
+            tabCoord.Controls.Add(btnTeleportPrev);
 
-            Button btnTeleportSelected = new Button { Text = "传送到选中", Location = new Point(12 + opBtnW + opGap, inputY), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            Button btnTeleportSelected = new Button { Text = "传送到选中", Location = new Point(12 + 100 + opGap, inputY), Size = new Size(100, btnH), Tag = "mem" };
             btnTeleportSelected.Click += (s, ev) => TeleportToSelectedCoord();
             tabCoord.Controls.Add(btnTeleportSelected);
 
-            yCoord[0] = inputY + btnH + 8;
+            // 右按钮: 传送到下一条坐标 (AAA 辅助风格)
+            Button btnTeleportNext = new Button { Text = "传送下一条 →", Location = new Point(12 + (100 + opGap) * 2, inputY), Size = new Size(100, btnH), Tag = "mem" };
+            btnTeleportNext.Click += (s, ev) => TeleportAdjacent(1);
+            tabCoord.Controls.Add(btnTeleportNext);
 
-            addTabSection(tabCoord, "坐标初始化", yCoord);
-            Button btnInitCoordHook = new Button { Text = "初始化坐标", Location = new Point(12, yCoord[0]), Size = new Size(opBtnW, btnH), Tag = "mem" };
-            btnInitCoordHook.Click += (s, ev) => InitCoordHook();
-            tabCoord.Controls.Add(btnInitCoordHook);
-            Button btnVerifyAob = new Button { Text = "验证/切换", Location = new Point(12 + opBtnW + opGap, yCoord[0]), Size = new Size(opBtnW, btnH), Tag = "mem" };
-            btnVerifyAob.Click += (s, ev) =>
+            inputY += btnH + 4;
+            // 微调传送模式 (对齐 AAA.exe 的 Alt+方向键/空格/C 功能)
+            // 两个勾选框 + ? 提示图标, 勾选后通过全局键盘钩子触发微调传送
+            var nudgeToolTip = new ToolTip { InitialDelay = 100, ReshowDelay = 100, AutoPopDelay = 10000 };
+            CheckBox chkFlyMode = new CheckBox { Text = "飞天遁地", Location = new Point(12, inputY + 2), Size = new Size(80, btnH), Tag = "mem" };
+            tabCoord.Controls.Add(chkFlyMode);
+            Label lblFlyHelp = new Label { Text = "?", Location = new Point(12 + 80 + 2, inputY + 4), Size = new Size(14, 16), ForeColor = Color.Blue, Cursor = Cursors.Help, Tag = "mem" };
+            tabCoord.Controls.Add(lblFlyHelp);
+            nudgeToolTip.SetToolTip(lblFlyHelp, "勾选后:\n  方向键 ↑ = 向上瞬移 (Y+2)\n  方向键 ↓ = 向下瞬移 (Y-6)\n游戏中按方向键上下即可, 取消勾选关闭");
+
+            CheckBox chkNudgeMode = new CheckBox { Text = "瞬移", Location = new Point(180, inputY + 2), Size = new Size(60, btnH), Tag = "mem" };
+            tabCoord.Controls.Add(chkNudgeMode);
+            Label lblNudgeHelp = new Label { Text = "?", Location = new Point(180 + 60 + 2, inputY + 4), Size = new Size(14, 16), ForeColor = Color.Blue, Cursor = Cursors.Help, Tag = "mem" };
+            tabCoord.Controls.Add(lblNudgeHelp);
+            nudgeToolTip.SetToolTip(lblNudgeHelp, "勾选后按住 Alt + 方向键:\n  Alt+↑ = 向北 (Z-3)\n  Alt+↓ = 向南 (Z+3)\n  Alt+← = 向西 (X-3)\n  Alt+→ = 向东 (X+3)\n取消勾选关闭");
+
+            chkFlyMode.CheckedChanged += (s, ev) =>
             {
-                // 如果有多个slot，每次点击循环切换
-                if (coordHookInjectAddrs.Count > 1)
-                {
-                    int next = (coordHookActiveSlot + 1) % coordHookInjectAddrs.Count;
-                    if (next != coordHookActiveSlot)
-                    {
-                        SwitchCoordSlot(next);
-                    }
-                }
-                VerifyCoordAOB();
+                flyModeEnabled = chkFlyMode.Checked;
+                UpdateNudgeHookState();
+                AppendLog("[微调] 飞天遁地模式: " + (flyModeEnabled ? "开启" : "关闭"));
             };
-            tabCoord.Controls.Add(btnVerifyAob);
-            yCoord[0] += btnH + 8;
+            chkNudgeMode.CheckedChanged += (s, ev) =>
+            {
+                nudgeModeEnabled = chkNudgeMode.Checked;
+                UpdateNudgeHookState();
+                AppendLog("[微调] 瞬移模式: " + (nudgeModeEnabled ? "开启" : "关闭"));
+            };
+
+            yCoord[0] = inputY + btnH + 8;
 
             txtCoordInput = new TextBox { Text = "" };
 
@@ -1842,9 +1927,6 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
                                 double.TryParse(parts[1].Trim(), out py) &&
                                 double.TryParse(parts[2].Trim(), out pz))
                             {
-                                txtCoordX.Text = px.ToString("F1");
-                                txtCoordY.Text = py.ToString("F1");
-                                txtCoordZ.Text = pz.ToString("F1");
                                 lastReadX = px; lastReadY = py; lastReadZ = pz;
                                 AppendLog("当前坐标: X=" + px.ToString("F1") + " Y=" + py.ToString("F1") + " Z=" + pz.ToString("F1"));
                             }
@@ -2163,7 +2245,7 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
 
         void SelectCoordFile()
         {
-            var dlg = new OpenFileDialog { Filter = "文本文件|*.txt|所有文件|*.*", Title = "选择坐标文本文件" };
+            var dlg = new OpenFileDialog { Filter = "坐标文件|*.txt;*.ini|文本文件|*.txt|INI文件|*.ini|所有文件|*.*", Title = "选择坐标文件" };
             if (dlg.ShowDialog() == DialogResult.OK)
             {
                 coordFilePath = dlg.FileName;
@@ -2179,28 +2261,75 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
             catch (Exception ex) { MessageBox.Show("打开失败: " + ex.Message); }
         }
 
+        // 把当前实时坐标 (lastReadX/Y/Z) 添加到坐标列表
         void SetCustomCurrent()
         {
-            double x, y, z;
-            if (!double.TryParse(txtCoordX.Text.Trim(), out x)) { MessageBox.Show("X坐标无效"); return; }
-            if (!double.TryParse(txtCoordY.Text.Trim(), out y)) { MessageBox.Show("Y坐标无效"); return; }
-            if (!double.TryParse(txtCoordZ.Text.Trim(), out z)) { MessageBox.Show("Z坐标无效"); return; }
-            lastReadX = x; lastReadY = y; lastReadZ = z;
+            if (lastReadX == 0 && lastReadY == 0 && lastReadZ == 0)
+            {
+                MessageBox.Show("当前坐标无效, 请先初始化坐标");
+                return;
+            }
+            string remark = txtCoordRemark.Text.Trim();
+            int idx = dgvCoords.Rows.Count + 1;
+            dgvCoords.Rows.Add(idx, lastReadX.ToString("F1"), lastReadY.ToString("F1"), lastReadZ.ToString("F1"), remark);
+            AppendLog(string.Format("[坐标] 已添加: X={0:F1} Y={1:F1} Z={2:F1} {3}", lastReadX, lastReadY, lastReadZ, remark));
         }
 
         void LoadCoordsFromFile(string path)
         {
             try
             {
-                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                // 自动编码检测: UTF8 优先(带 BOM 或可成功解码), 失败回退 ANSI(GBK/Default)
+                // 解决记事本默认保存为 ANSI(GBK) 的中文坐标文件乱码问题
+                string[] lines;
+                byte[] bytes = File.ReadAllBytes(path);
+                if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                {
+                    // UTF-8 BOM
+                    lines = File.ReadAllLines(path, Encoding.UTF8);
+                }
+                else
+                {
+                    // 尝试 UTF8 严格解码, 失败则用 ANSI(GBK)
+                    try
+                    {
+                        string test = Encoding.UTF8.GetString(bytes);
+                        // UTF8 解码后若含替换字符, 视为非 UTF8 文件
+                        if (test.IndexOf('\uFFFD') >= 0)
+                            lines = File.ReadAllLines(path, Encoding.Default);
+                        else
+                            lines = File.ReadAllLines(path, Encoding.UTF8);
+                    }
+                    catch
+                    {
+                        lines = File.ReadAllLines(path, Encoding.Default);
+                    }
+                }
+
                 dgvCoords.Rows.Clear();
                 int idx = 1;
+                bool isIni = path.EndsWith(".ini", StringComparison.OrdinalIgnoreCase);
                 foreach (string line in lines)
                 {
                     string trimmed = line.Trim();
-                    if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#") || trimmed.StartsWith(";")) continue;
+                    if (string.IsNullOrEmpty(trimmed)) continue;
+                    if (trimmed.StartsWith("#")) continue;
+                    // ini 的节头 [xxx] 跳过
+                    if (isIni && trimmed.StartsWith("[")) continue;
+                    // ini 的注释 ';' 跳过; txt 里 ';' 也当注释(保持向后兼容)
+                    if (trimmed.StartsWith(";")) continue;
+
+                    // ini 格式: key=value, value 可能是 "X,Y,Z" 或 "名称,X,Y,Z"
+                    string content = trimmed;
+                    if (isIni && content.Contains("="))
+                    {
+                        int eq = content.IndexOf('=');
+                        content = content.Substring(eq + 1).Trim();
+                        if (string.IsNullOrEmpty(content)) continue;
+                    }
+
                     char[] seps = new char[] { ',', ' ', '\t' };
-                    string[] parts = trimmed.Split(seps, StringSplitOptions.RemoveEmptyEntries);
+                    string[] parts = content.Split(seps, StringSplitOptions.RemoveEmptyEntries);
                     if (parts.Length >= 3)
                     {
                         double cx, cy, cz;
@@ -2215,6 +2344,13 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
                             double.TryParse(parts[off + 2], out cz))
                         {
                             if (off == 0 && parts.Length > 3) remark = string.Join(" ", parts, 3, parts.Length - 3);
+                            // ini 模式下若无备注, 用 key 名作为备注
+                            if (isIni && string.IsNullOrEmpty(remark) && trimmed.Contains("="))
+                            {
+                                int eq = trimmed.IndexOf('=');
+                                string key = trimmed.Substring(0, eq).Trim();
+                                if (!string.IsNullOrEmpty(key)) remark = key;
+                            }
                             dgvCoords.Rows.Add(idx++, cx.ToString("F1"), cy.ToString("F1"), cz.ToString("F1"), remark);
                         }
                     }
@@ -2226,13 +2362,8 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
 
         void AddCoordToList()
         {
-            double x, y, z;
-            if (!double.TryParse(txtCoordX.Text.Trim(), out x)) { MessageBox.Show("X坐标无效"); return; }
-            if (!double.TryParse(txtCoordY.Text.Trim(), out y)) { MessageBox.Show("Y坐标无效"); return; }
-            if (!double.TryParse(txtCoordZ.Text.Trim(), out z)) { MessageBox.Show("Z坐标无效"); return; }
-            string remark = txtCoordRemark.Text.Trim();
-            int idx = dgvCoords.Rows.Count + 1;
-            dgvCoords.Rows.Add(idx, x.ToString("F1"), y.ToString("F1"), z.ToString("F1"), remark);
+            // 复用 SetCustomCurrent (添加当前实时坐标到列表)
+            SetCustomCurrent();
         }
 
         void TeleportToSelectedCoord()
@@ -2255,6 +2386,28 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
             {
                 AppendLog("传送失败");
             }
+        }
+
+        // 左右按钮: 传送到上一条/下一条坐标 (循环切换)
+        // direction: -1=上一条, +1=下一条
+        void TeleportAdjacent(int direction)
+        {
+            int count = dgvCoords.Rows.Count;
+            if (count == 0) { MessageBox.Show("坐标列表为空"); return; }
+            int curIdx = -1;
+            if (dgvCoords.SelectedRows.Count > 0)
+                curIdx = dgvCoords.SelectedRows[0].Index;
+            // 计算目标行索引(循环)
+            int nextIdx;
+            if (curIdx < 0)
+                nextIdx = direction > 0 ? 0 : count - 1;
+            else
+                nextIdx = (curIdx + direction + count) % count;
+            // 切换选中并传送
+            dgvCoords.ClearSelection();
+            dgvCoords.Rows[nextIdx].Selected = true;
+            dgvCoords.FirstDisplayedScrollingRowIndex = nextIdx;
+            TeleportToSelectedCoord();
         }
 
         void SaveCurrentCoordToDesktop()
@@ -2307,9 +2460,6 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
             {
                 AppendLog("警告: 读取到的坐标全为0，可能未进入游戏场景或偏移已过期");
             }
-            txtCoordX.Text = px.ToString("F1");
-            txtCoordY.Text = py.ToString("F1");
-            txtCoordZ.Text = pz.ToString("F1");
             lastReadX = px; lastReadY = py; lastReadZ = pz;
             AppendLog("当前坐标: X=" + px.ToString("F1") + " Y(高)=" + py.ToString("F1") + " Z=" + pz.ToString("F1"));
         }
@@ -4227,6 +4377,22 @@ end
                 cachedModuleBase = moduleBase;
                 AppendLog(string.Format("[坐标] 模块基址=0x{0:X}", moduleBase));
 
+                // v38.1: 优先尝试静态指针链方案, 成功则跳过 Hook 后备初始化(避免 7 秒 AOB 扫描卡顿)
+                long ptrChainObj;
+                if (ResolveCoordBaseByPtrChain(hProcess, out ptrChainObj, true))
+                {
+                    lastResolveWasPtrChain = true;
+                    double x = ReadDouble(hProcess, ptrChainObj + COORD_OFFSET_X);
+                    double y = ReadDouble(hProcess, ptrChainObj + COORD_OFFSET_Y);
+                    double z = ReadDouble(hProcess, ptrChainObj + COORD_OFFSET_Z);
+                    AppendLog(string.Format("[坐标] 静态指针链初始化成功: OBJ=0x{0:X}", ptrChainObj));
+                    AppendLog(string.Format("[坐标] X={0:F1} Y(高)={1:F1} Z={2:F1}", x, y, z));
+                    AppendLog("[坐标] 使用静态指针链方案, 跳过Hook初始化(无需AOB扫描)");
+                    AppendLog("[坐标] 游戏运行期间自动跟踪玩家坐标对象");
+                    return;
+                }
+                AppendLog("[坐标] 静态指针链失败, 回退到Hook后备方案...");
+
                 // AOB扫描所有 vmovsd [rcx+0x340], xmm0 指令
                 byte[] pattern; bool[] mask;
                 ParseAOB(COORD_AOB, out pattern, out mask);
@@ -4937,8 +5103,217 @@ end
             // 优化项1: 不在此 CloseHandle, 长驻句柄由 AcquireCoordHandle/OnFormClosing 管理生命周期
         }
 
+        // ===== 传送后按键模拟 (PostMessageW 方案, 对齐 AAA.exe) =====
+        // 关键: AAA 用 PostMessageW 给游戏窗口发 WM_KEYDOWN/UP, 可后台无需前台焦点
+        // 早期 banyi 用 SendInput 需游戏前台且仍被拉回, 改 PostMessageW 解决
+        string tpKeySequence = "20,51";  // VK_SPACE=0x20, VK_Q=0x51
+        int tpKeyDelayMs = 50;           // 按键间隔(毫秒)
+        IntPtr cachedGameHwnd = IntPtr.Zero;  // 游戏窗口句柄缓存
+
+        // 查找游戏窗口句柄 (yysls.exe 的可见顶层窗口)
+        IntPtr FindGameWindow()
+        {
+            if (cachedGameHwnd != IntPtr.Zero) return cachedGameHwnd;
+            IntPtr found = IntPtr.Zero;
+            int targetPid = persistentCoordPid;
+            if (targetPid == 0)
+            {
+                try
+                {
+                    var procs = System.Diagnostics.Process.GetProcessesByName("yysls");
+                    if (procs.Length > 0) targetPid = procs[0].Id;
+                }
+                catch { }
+            }
+            if (targetPid == 0) return IntPtr.Zero;
+            EnumWindows((hWnd, lp) =>
+            {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == (uint)targetPid && IsWindowVisible(hWnd))
+                {
+                    found = hWnd;
+                    return false;  // 找到即停
+                }
+                return true;
+            }, IntPtr.Zero);
+            cachedGameHwnd = found;
+            return found;
+        }
+
+        // PostMessageW 发送单键 按下+抬起
+        void PostKeyPress(IntPtr hWnd, ushort vk)
+        {
+            if (hWnd == IntPtr.Zero) return;
+            PostMessageW(hWnd, WM_KEYDOWN, (IntPtr)vk, IntPtr.Zero);
+            System.Threading.Thread.Sleep(tpKeyDelayMs);
+            PostMessageW(hWnd, WM_KEYUP, (IntPtr)vk, (IntPtr)0xC0000000);
+        }
+
+        // PostMessageW 发送 Alt+键 (用 WM_SYSKEYDOWN/UP, wParam 为 vk, lParam 含 Alt 标志)
+        void PostKeyWithAlt(IntPtr hWnd, ushort vk)
+        {
+            if (hWnd == IntPtr.Zero) return;
+            // lParam bit20(0x20000000) = context code, Alt 按下
+            PostMessageW(hWnd, WM_SYSKEYDOWN, (IntPtr)vk, (IntPtr)0x20000001);
+            System.Threading.Thread.Sleep(tpKeyDelayMs);
+            PostMessageW(hWnd, WM_SYSKEYUP, (IntPtr)vk, (IntPtr)0xE0000001);
+        }
+
+        // 传送后触发按键序列 (冻结窗口内执行, PostMessageW 到游戏窗口)
+        void FireTeleportKeys()
+        {
+            if (string.IsNullOrEmpty(tpKeySequence)) return;
+            IntPtr hWnd = FindGameWindow();
+            if (hWnd == IntPtr.Zero)
+            {
+                AppendLog("[传送] 未找到游戏窗口, 跳过按键模拟");
+                return;
+            }
+            try
+            {
+                string[] parts = tpKeySequence.Split(new char[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string p in parts)
+                {
+                    ushort vk;
+                    if (ushort.TryParse(p.Trim(), System.Globalization.NumberStyles.HexNumber, null, out vk))
+                    {
+                        PostKeyPress(hWnd, vk);
+                    }
+                }
+                AppendLog(string.Format("[传送] PostMessageW 已发送序列: {0} hWnd=0x{1:X}", tpKeySequence, hWnd.ToInt64()));
+            }
+            catch (Exception ex) { AppendLog("[传送] 按键模拟失败: " + ex.Message); }
+        }
+
+        // ===== 微调传送 (对齐 AAA.exe 的 Alt+方向键/空格/C 行为) =====
+        // AAA 逆向结论: 微调传送是直接写入坐标内存, 无按键模拟, 无冻结
+        // 偏移方向: +X=东, -X=西, +Z=南, -Z=北, +Y=上, -Y=下
+        // 步长参考 AAA 实测: 水平 3.0 米, 垂直上 2.0 米, 垂直下 6.0 米
+        const double NUDGE_HORIZONTAL = 3.0;
+        const double NUDGE_UP = 2.0;
+        const double NUDGE_DOWN = 6.0;
+
+        // 微调传送: 读取当前坐标 + 偏移 + 单次写入 (不冻结不按键)
+        void NudgeTeleport(double dx, double dy, double dz)
+        {
+            if (!chkEnableMemory.Checked)
+            {
+                AppendLog("微调失败: 请先勾选'启用内存功能'");
+                return;
+            }
+            double x, y, z;
+            if (!ReadMemCoord(out x, out y, out z))
+            {
+                AppendLog("微调失败: 无法读取当前坐标 (请先初始化坐标)");
+                return;
+            }
+            double nx = x + dx, ny = y + dy, nz = z + dz;
+            if (WriteMemCoord(nx, ny, nz, false))
+            {
+                AppendLog(string.Format("[微调] ({0:F1},{1:F1},{2:F1}) -> ({3:F1},{4:F1},{5:F1})  dx={6} dy={7} dz={8}",
+                    x, y, z, nx, ny, nz, dx, dy, dz));
+            }
+            else
+            {
+                AppendLog("[微调] 写入失败");
+            }
+        }
+
+        // 更新键盘钩子状态: 任一模式开启则安装钩子, 都关闭则卸载
+        void UpdateNudgeHookState()
+        {
+            bool needHook = flyModeEnabled || nudgeModeEnabled;
+            if (needHook && nudgeKbHook == IntPtr.Zero)
+            {
+                using (System.Diagnostics.Process curProc = System.Diagnostics.Process.GetCurrentProcess())
+                using (System.Diagnostics.ProcessModule mod = curProc.MainModule)
+                {
+                    nudgeKbHook = SetWindowsHookEx(WH_KEYBOARD_LL, NudgeKbProc, GetModuleHandle(mod.ModuleName), 0);
+                }
+                if (nudgeKbHook == IntPtr.Zero)
+                {
+                    AppendLog("[微调] 键盘钩子安装失败: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+                }
+            }
+            else if (!needHook && nudgeKbHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(nudgeKbHook);
+                nudgeKbHook = IntPtr.Zero;
+                // 重置按键去抖动状态, 避免下次开启时被卡住
+                flyKeyUp = flyKeyDown = true;
+                nudgeKeyLeft = nudgeKeyRight = nudgeKeyUp = nudgeKeyDown = true;
+            }
+        }
+
+        // 低级键盘钩子回调: 在 UI 线程外执行, 不可直接操作控件, 仅触发微调传送
+        IntPtr NudgeKbProc(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0)
+            {
+                int vk = System.Runtime.InteropServices.Marshal.ReadInt32(lParam);
+                uint msg = (uint)wParam.ToInt64();
+                bool isDown = (msg == WM_KEYDOWN_LL || msg == WM_SYSKEYDOWN_LL);
+                bool isUp = (msg == WM_KEYUP_LL || msg == WM_SYSKEYUP_LL);
+
+                if (flyModeEnabled && (vk == VK_UP || vk == VK_DOWN))
+                {
+                    // 飞天遁地用无 Alt 的方向键 (WM_KEYDOWN), 与瞬移模式的 Alt+方向键 (WM_SYSKEYDOWN) 互不干扰
+                    if (vk == VK_UP && isDown && flyKeyUp)
+                    {
+                        flyKeyUp = false;
+                        BeginInvoke((Action)(() => NudgeTeleport(0, NUDGE_UP, 0)));
+                    }
+                    else if (vk == VK_DOWN && isDown && flyKeyDown)
+                    {
+                        flyKeyDown = false;
+                        BeginInvoke((Action)(() => NudgeTeleport(0, -NUDGE_DOWN, 0)));
+                    }
+                    else if (vk == VK_UP && isUp) flyKeyUp = true;
+                    else if (vk == VK_DOWN && isUp) flyKeyDown = true;
+                }
+
+                if (nudgeModeEnabled)
+                {
+                    // Alt+方向键 (WM_SYSKEYDOWN/UP), 拦截方向键避免游戏同时响应
+                    if (msg == WM_SYSKEYDOWN_LL || msg == WM_SYSKEYUP_LL)
+                    {
+                        if (vk == VK_UP && isDown && nudgeKeyUp)
+                        {
+                            nudgeKeyUp = false;
+                            BeginInvoke((Action)(() => NudgeTeleport(0, 0, -NUDGE_HORIZONTAL)));
+                        }
+                        else if (vk == VK_DOWN && isDown && nudgeKeyDown)
+                        {
+                            nudgeKeyDown = false;
+                            BeginInvoke((Action)(() => NudgeTeleport(0, 0, NUDGE_HORIZONTAL)));
+                        }
+                        else if (vk == VK_LEFT && isDown && nudgeKeyLeft)
+                        {
+                            nudgeKeyLeft = false;
+                            BeginInvoke((Action)(() => NudgeTeleport(-NUDGE_HORIZONTAL, 0, 0)));
+                        }
+                        else if (vk == VK_RIGHT && isDown && nudgeKeyRight)
+                        {
+                            nudgeKeyRight = false;
+                            BeginInvoke((Action)(() => NudgeTeleport(NUDGE_HORIZONTAL, 0, 0)));
+                        }
+                        else if (isUp)
+                        {
+                            if (vk == VK_UP) nudgeKeyUp = true;
+                            else if (vk == VK_DOWN) nudgeKeyDown = true;
+                            else if (vk == VK_LEFT) nudgeKeyLeft = true;
+                            else if (vk == VK_RIGHT) nudgeKeyRight = true;
+                        }
+                    }
+                }
+            }
+            return CallNextHookEx(nudgeKbHook, nCode, wParam, lParam);
+        }
+
         // 通过hook捕获的寄存器值写入坐标 + 冻结
-        bool WriteMemCoord(double x, double y, double z)
+        // freezeAndKeys=false 时仅写入一次, 不启动冻结定时器也不发按键 (用于微调传送, 对齐 AAA.exe 行为)
+        bool WriteMemCoord(double x, double y, double z, bool freezeAndKeys = true)
         {
             if (!chkEnableMemory.Checked)
             {
@@ -4984,6 +5359,12 @@ end
                     AppendLog(string.Format("[传送] 写入相机坐标: X={0:F1} Y={1:F1} Z={2:F1}", camX, camY, camZ));
                 }
 
+                if (!freezeAndKeys)
+                {
+                    // 微调传送: 单次写入即可, 不冻结不按键
+                    return ok;
+                }
+
                 // 关闭上一次冻结 (优化项1: 句柄长驻, 仅停止定时器, 不 CloseHandle)
                 if (coordFreezeTimer != null && coordFreezeTimer.Enabled)
                 {
@@ -5005,6 +5386,9 @@ end
                     coordFreezeTimer.Tick += CoordFreezeTick;
                 }
                 coordFreezeTimer.Start();
+                // 传送后触发按键序列(空格+Q), 绕过游戏位移回滚机制
+                // 在冻结窗口(约1秒)内发送, 此时坐标正被反复写入锁定
+                FireTeleportKeys();
                 return ok;
             }
             catch (Exception ex) { AppendLog("传送异常: " + ex.Message); return false; }
@@ -5389,6 +5773,21 @@ end
                 }
             };
             readyPollTimer.Start();
+
+            // 实时坐标刷新定时器: 每 500ms 读取当前坐标并更新 lblLiveCoord
+            liveCoordTimer = new System.Windows.Forms.Timer();
+            liveCoordTimer.Interval = 500;
+            liveCoordTimer.Tick += (s, e2) =>
+            {
+                if (!chkEnableMemory.Checked) return;
+                double x, y, z;
+                if (ReadMemCoord(out x, out y, out z))
+                {
+                    lblLiveCoord.Text = string.Format("X={0:F1}  Y={1:F1}  Z={2:F1}", x, y, z);
+                    lastReadX = x; lastReadY = y; lastReadZ = z;
+                }
+            };
+            liveCoordTimer.Start();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -5397,6 +5796,8 @@ end
             try { if (injectionDiagTimer != null) { injectionDiagTimer.Stop(); injectionDiagTimer.Dispose(); injectionDiagTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose injectionDiagTimer failed: " + ex.Message); }
             try { if (readyPollTimer != null) { readyPollTimer.Stop(); readyPollTimer.Dispose(); readyPollTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose readyPollTimer failed: " + ex.Message); }
             try { if (coordFreezeTimer != null) { coordFreezeTimer.Stop(); coordFreezeTimer.Dispose(); coordFreezeTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose coordFreezeTimer failed: " + ex.Message); }
+            try { if (liveCoordTimer != null) { liveCoordTimer.Stop(); liveCoordTimer.Dispose(); liveCoordTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose liveCoordTimer failed: " + ex.Message); }
+            try { if (nudgeKbHook != IntPtr.Zero) { UnhookWindowsHookEx(nudgeKbHook); nudgeKbHook = IntPtr.Zero; } } catch (Exception ex) { Debug.WriteLine("Unhook nudgeKbHook failed: " + ex.Message); }
             try { if (persistentCoordHProcess != IntPtr.Zero) { CloseHandle(persistentCoordHProcess); persistentCoordHProcess = IntPtr.Zero; persistentCoordPid = 0; } } catch (Exception ex) { Debug.WriteLine("Dispose persistentCoordHProcess failed: " + ex.Message); }
             try { ClearManagedFiles(); } catch (Exception ex) { Debug.WriteLine("OnFormClosing ClearManagedFiles failed: " + ex.Message); }
             try { if (mmfAccessor != null) mmfAccessor.Dispose(); } catch (Exception ex) { Debug.WriteLine("Dispose mmfAccessor failed: " + ex.Message); }

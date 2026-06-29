@@ -1,8 +1,0 @@
-{
-  "enabled": false,
-  "engine": "claude",
-  "model": "mimo-v2.5-pro",
-  "newSessionThreshold": 5,
-  "checkIntervalMinutes": 30,
-  "applyMode": "createCandidate"
-}
