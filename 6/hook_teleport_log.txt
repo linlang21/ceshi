@@ -1,0 +1,7 @@
+[*] Teleport hooks installed on PID 17164 arch=ia32
+
+========== MARKER: BASELINE (call#0) ==========
+
+
+========== MARKER: TELEPORT (call#23331) ==========
+

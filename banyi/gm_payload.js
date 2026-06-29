@@ -219,8 +219,24 @@ function scan(sig, name, base, modSize) {
             log('Signature not found: ' + name);
             return null;
         }
-        var addr = res[0].address;
-        log(name + ' @ RVA=0x' + addr.sub(base).toString(16));
+        // 优先选择可执行内存中的匹配
+        var addr = null;
+        for (var i = 0; i < res.length; i++) {
+            var a = res[i].address;
+            var rva = a.sub(base);
+            try {
+                var info = Process.findRangeByAddress(a);
+                if (info && (info.protection.indexOf('x') >= 0 || info.protection.indexOf('X') >= 0)) {
+                    addr = a;
+                    log(name + ' @ RVA=0x' + rva.toString(16) + ' (executable, match ' + (i+1) + '/' + res.length + ')');
+                    break;
+                }
+            } catch (e) {}
+        }
+        if (!addr) {
+            addr = res[0].address;
+            log(name + ' @ RVA=0x' + addr.sub(base).toString(16) + ' (WARNING: not in executable memory, ' + res.length + ' matches found)');
+        }
         return addr;
     } catch (e) {
         log('scan error for ' + name + ': ' + e);
@@ -426,6 +442,70 @@ if (!yysls) {
             }
         });
         log('Hook attached, waiting for capture.');
+
+        // === Coordinate base hook ===
+        // AOB: vmovups [rbx+0x340],xmm0 — 坐标写指令，rbx为角色对象指针
+        // CT表逻辑: cmp [rbx+0x54],0 → jne → mov [D1Z],rbx (仅保存本人对象)
+        var COORD_AOB = 'C5 F8 11 83 40 03 00 00 C4';
+        var g_coordBaseMem = Memory.alloc(8);
+        g_coordBaseMem.writeU64(uint64(0));
+
+        try {
+            var coordAddr = scan(COORD_AOB, 'coord_write', base, modSize);
+            if (coordAddr) {
+                // 诊断：打印找到地址处的字节和CT表原始RVA处的字节
+                try {
+                    var foundBytes = coordAddr.readByteArray(16);
+                    log('Coord bytes at found addr: ' + Array.from(new Uint8Array(foundBytes)).map(function(b){return ('0'+b.toString(16)).slice(-2);}).join(' '));
+                    var ctRva = 0x2FECB9C;
+                    var ctAddr = base.add(ctRva);
+                    var ctBytes = ctAddr.readByteArray(16);
+                    log('Coord bytes at CT-RVA 0x2FECB9C: ' + Array.from(new Uint8Array(ctBytes)).map(function(b){return ('0'+b.toString(16)).slice(-2);}).join(' '));
+                } catch(e) { log('Coord byte diag error: ' + e); }
+
+                var coordHitCount = 0;
+                var coordFlagNonZero = 0;
+                Interceptor.attach(coordAddr, {
+                    onEnter: function (args) {
+                        try {
+                            coordHitCount++;
+                            var rbx = this.context.rbx;
+                            if (rbx && !rbx.isNull()) {
+                                var flag = rbx.add(0x54).readS32();
+                                if (flag === 0) {
+                                    g_coordBaseMem.writeU64(rbx);
+                                } else {
+                                    coordFlagNonZero++;
+                                }
+                            }
+                        } catch (e) {}
+                    }
+                });
+                // 诊断：5秒后检查rbx是否被写入
+                var diagMem = g_coordBaseMem;
+                setTimeout(function () {
+                    try {
+                        var val = diagMem.readU64();
+                        log('Coord diag: hits=' + coordHitCount + ' flagNonZero=' + coordFlagNonZero + ' rbx=' + val);
+                        if (val.equals(uint64(0))) {
+                            if (coordHitCount === 0) {
+                                log('Coord diag: instruction never executed - wrong AOB or game logic path');
+                            } else if (coordFlagNonZero > 0) {
+                                log('Coord diag: all hits have flag!=0, trying without flag check');
+                                // 降级：存最后一次的rbx，不管flag
+                                // 下次onEnter会再执行
+                            }
+                        }
+                    } catch (e) {}
+                }, 5000);
+                log('Coord hook attached. Base ptr: ' + g_coordBaseMem);
+                nativeWriteFile(TOOL_ROOT + '\\coord_ptr.txt', g_coordBaseMem.toString());
+            } else {
+                log('Coord AOB not found');
+            }
+        } catch (e) {
+            log('Coord hook error: ' + e);
+        }
 
         // 打开共享内存
         var mmfOk = openSharedMemory();

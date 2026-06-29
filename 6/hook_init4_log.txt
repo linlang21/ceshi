@@ -1,0 +1,55 @@
+[*] Init-btn-4 hooks installed on PID 17164 arch=ia32
+
+========== MARKER: PRE_CLICK (call#0) ==========
+
+
+========== MARKER: INIT_BTN_4 (call#0) ==========
+
+[OPEN yysls MARK=INIT_BTN_4] H=0x42c
+[W64 other MARK=INIT_BTN_4] #34532 Base=0x0000000002180000 Size=0x11c0 status=0x0 data=00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+    bt[0] 0x751b01f9 AAA.exe!CreateProcessInternalW+0x0
+    bt[1] 0x7748ba50 AAA.exe!NtWow64WriteVirtualMemory64+0x0
+    bt[2] 0x7529d265 AAA.exe!CreateProcessInternalA+0x0
+    bt[3] 0x7529cf5c AAA.exe!CreateProcessA+0x0
+    bt[4] 0x446701 ?!?+0x0
+    bt[5] 0x4035ec ?!?+0x0
+    bt[6] 0x40180a ?!?+0x0
+    bt[7] 0x40eb16 ?!?+0x0
+    bt[8] 0x7747e12b AAA.exe!RtlInitializeExceptionChain+0x0
+    bt[9] 0x7747e0b1 AAA.exe!RtlGetAppContainerNamedObjectPath+0x0
+    bt[10] 0x42b5dd ?!?+0x0
+[W64 other MARK=INIT_BTN_4] #34533 Base=0x00000000023ee2d8 Size=0x8 status=0x0 data=00001802 00000000
+    bt[0] 0x751b0234 AAA.exe!CreateProcessInternalW+0x0
+    bt[1] 0x7748ba50 AAA.exe!NtWow64WriteVirtualMemory64+0x0
+    bt[2] 0x7529d265 AAA.exe!CreateProcessInternalA+0x0
+    bt[3] 0x7529cf5c AAA.exe!CreateProcessA+0x0
+    bt[4] 0x446701 ?!?+0x0
+    bt[5] 0x4035ec ?!?+0x0
+    bt[6] 0x40180a ?!?+0x0
+    bt[7] 0x40eb16 ?!?+0x0
+    bt[8] 0x7747e12b AAA.exe!RtlInitializeExceptionChain+0x0
+    bt[9] 0x7747e0b1 AAA.exe!RtlGetAppContainerNamedObjectPath+0x0
+    bt[10] 0x42b5dd ?!?+0x0
+
+>>> [CreateProcessA MARK=INIT_BTN_4] #34531
+    appName  = <null>
+    cmdLine  = cmd /c sc config "UxSms" start= demand
+    workDir  = 
+    siFlags  = 0x4c5126
+    siDesktop= 0
+    success  = 0x1
+    pi.hProcess=0xb2000000
+    pi.hThread  =0x1a3a1cb4
+    pi.dwPID    =1397915648
+    pi.dwTID    =2512147268
+    backtrace:
+      bt[0] 0x42b5dd ?!?+0x0
+      bt[1] 0x76ff0460 AAA.exe!CreateProcessA+0x0
+      bt[2] 0x4035ec ?!?+0x0
+      bt[3] 0x40180a ?!?+0x0
+      bt[4] 0x40eb16 ?!?+0x0
+      bt[5] 0x7747e12b AAA.exe!RtlInitializeExceptionChain+0x0
+      bt[6] 0x7747e0b1 AAA.exe!RtlGetAppContainerNamedObjectPath+0x0
+      bt[7] 0x42b5dd ?!?+0x0
+<<<
+

@@ -170,9 +170,7 @@ namespace FridaGMTool
         class VersionManifestInfo
         {
             public string LatestVersion;
-            public string MinSupportedVersion;
             public string Notice;
-            public string DownloadUrl;
             public string BlockMessage;
             public bool BlockOnManifestError;
             public bool RemoteLoaded;
@@ -217,6 +215,8 @@ namespace FridaGMTool
         static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flAllocationType, uint flProtect);
         [DllImport("kernel32.dll")]
         static extern bool VirtualFreeEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint dwFreeType);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool VirtualProtectEx(IntPtr hProcess, IntPtr lpAddress, uint dwSize, uint flNewProtect, out uint lpflOldProtect);
         [DllImport("kernel32.dll")]
         static extern IntPtr CreateRemoteThread(IntPtr hProcess, IntPtr lpThreadAttributes, uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter, uint dwCreationFlags, out uint lpThreadId);
         [DllImport("kernel32.dll")]
@@ -232,6 +232,7 @@ namespace FridaGMTool
         const uint MEM_COMMIT = 0x1000;
         const uint MEM_RELEASE = 0x8000;
         const uint PAGE_READWRITE = 0x04;
+        const uint PAGE_EXECUTE_READWRITE = 0x40;
         const uint PROCESS_ALL_ACCESS = 0x1F0FFF;
         const uint INFINITE = 0xFFFFFFFF;
 
@@ -275,6 +276,9 @@ namespace FridaGMTool
         ComboBox cmbAtkMul, cmbAtkSpeed;
         TextBox txtDialogSpeed;
         TextBox txtCoordInput;
+        DataGridView dgvCoords;
+        TextBox txtCoordX, txtCoordZ, txtCoordY, txtCoordRemark, txtCoordFileName;
+        CheckBox chkEnableMemory;
         Label lblNotice;
         System.Windows.Forms.Timer readyPollTimer;
         System.Windows.Forms.Timer injectionDiagTimer;
@@ -291,7 +295,6 @@ namespace FridaGMTool
         string AuxLogFile = "";
         string CmdResultFile = "";
         string ToolResultFile = Path.Combine(ToolDir, "gm_tool_result.txt");
-        string ToolResultCompatFile = Path.Combine(WorkDir, "gm_tool_result.txt");
         string UnifiedLogFile = Path.Combine(ToolDir, "gm_tool.log");
 
         // 共享内存通信
@@ -375,7 +378,6 @@ namespace FridaGMTool
             GadgetLogFile = UnifiedLogFile;
             AuxLogFile = UnifiedLogFile;
             ToolResultFile = Path.Combine(ToolDir, "gm_tool_result.txt");
-            ToolResultCompatFile = Path.Combine(WorkDir, "gm_tool_result.txt");
         }
 
         static Version ParseVersionText(string text)
@@ -437,9 +439,7 @@ namespace FridaGMTool
             return new VersionManifestInfo
             {
                 LatestVersion = CurrentVersionText,
-                MinSupportedVersion = CurrentVersionText,
                 Notice = DefaultNoticeText,
-                DownloadUrl = "",
                 BlockMessage = "当前版本已停用，请更新到最新版后再使用。",
                 BlockOnManifestError = false,
                 RemoteLoaded = false,
@@ -491,14 +491,8 @@ namespace FridaGMTool
                     case "latest_version":
                         info.LatestVersion = value;
                         break;
-                    case "min_supported_version":
-                        info.MinSupportedVersion = value;
-                        break;
                     case "notice":
                         info.Notice = NormalizeManifestText(value);
-                        break;
-                    case "download_url":
-                        info.DownloadUrl = value;
                         break;
                     case "block_message":
                         info.BlockMessage = NormalizeManifestText(value);
@@ -506,6 +500,9 @@ namespace FridaGMTool
                     case "block_on_manifest_error":
                         bool blockOnError;
                         if (bool.TryParse(value, out blockOnError)) info.BlockOnManifestError = blockOnError;
+                        break;
+                    case "cache_max_age_minutes":
+                        // 读取但不存储，仅用于缓存有效期判断
                         break;
                 }
             }
@@ -517,9 +514,7 @@ namespace FridaGMTool
             VersionManifestInfo merged = CreateDefaultManifest();
             VersionManifestInfo source = baseInfo ?? CreateDefaultManifest();
             merged.LatestVersion = source.LatestVersion;
-            merged.MinSupportedVersion = source.MinSupportedVersion;
             merged.Notice = source.Notice;
-            merged.DownloadUrl = source.DownloadUrl;
             merged.BlockMessage = source.BlockMessage;
             merged.BlockOnManifestError = source.BlockOnManifestError;
             merged.RemoteLoaded = source.RemoteLoaded;
@@ -528,9 +523,7 @@ namespace FridaGMTool
 
             if (overrideInfo == null) return merged;
             if (!string.IsNullOrWhiteSpace(overrideInfo.LatestVersion)) merged.LatestVersion = overrideInfo.LatestVersion;
-            if (!string.IsNullOrWhiteSpace(overrideInfo.MinSupportedVersion)) merged.MinSupportedVersion = overrideInfo.MinSupportedVersion;
             if (!string.IsNullOrWhiteSpace(overrideInfo.Notice)) merged.Notice = overrideInfo.Notice;
-            if (!string.IsNullOrWhiteSpace(overrideInfo.DownloadUrl)) merged.DownloadUrl = overrideInfo.DownloadUrl;
             if (!string.IsNullOrWhiteSpace(overrideInfo.BlockMessage)) merged.BlockMessage = overrideInfo.BlockMessage;
             merged.BlockOnManifestError = overrideInfo.BlockOnManifestError;
             merged.RemoteLoaded = overrideInfo.RemoteLoaded;
@@ -607,9 +600,7 @@ namespace FridaGMTool
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("# 自动生成的共享版本清单");
                 sb.AppendLine("latest_version=" + (string.IsNullOrWhiteSpace(manifest.LatestVersion) ? CurrentVersionText : manifest.LatestVersion));
-                sb.AppendLine("min_supported_version=" + (string.IsNullOrWhiteSpace(manifest.MinSupportedVersion) ? CurrentVersionText : manifest.MinSupportedVersion));
                 sb.AppendLine("notice=" + (string.IsNullOrWhiteSpace(manifest.Notice) ? DefaultNoticeText : manifest.Notice).Replace(Environment.NewLine, "\\n"));
-                sb.AppendLine("download_url=" + (manifest.DownloadUrl ?? ""));
                 sb.AppendLine("block_message=" + (string.IsNullOrWhiteSpace(manifest.BlockMessage) ? "当前版本已停用，请更新到最新版后再使用。" : manifest.BlockMessage).Replace(Environment.NewLine, "\\n"));
                 sb.AppendLine("block_on_manifest_error=" + manifest.BlockOnManifestError.ToString().ToLowerInvariant());
                 File.WriteAllText(SharedVersionManifestFile, sb.ToString(), new UTF8Encoding(false));
@@ -635,18 +626,13 @@ namespace FridaGMTool
                 return false;
             }
 
-            Version minSupported = ParseVersionText(effectiveManifest.MinSupportedVersion);
-            if (CurrentVersion.CompareTo(minSupported) >= 0) return true;
+            Version latestVersion = ParseVersionText(effectiveManifest.LatestVersion);
+            if (CurrentVersion.CompareTo(latestVersion) >= 0) return true;
 
             StringBuilder sb = new StringBuilder();
             sb.AppendLine(string.IsNullOrWhiteSpace(effectiveManifest.BlockMessage) ? "当前版本已停用，请更新到最新版后再使用。" : effectiveManifest.BlockMessage);
             sb.AppendLine();
-            sb.AppendLine("当前版本：v" + CurrentVersionText);
-            sb.AppendLine("最低可用：v" + effectiveManifest.MinSupportedVersion);
-            if (!string.IsNullOrWhiteSpace(effectiveManifest.LatestVersion))
-                sb.AppendLine("最新版本：v" + effectiveManifest.LatestVersion);
-            if (!string.IsNullOrWhiteSpace(effectiveManifest.DownloadUrl))
-                sb.AppendLine("更新地址：" + effectiveManifest.DownloadUrl);
+            sb.AppendLine("最新版本：v" + effectiveManifest.LatestVersion);
             MessageBox.Show(sb.ToString().TrimEnd(), "版本已停用", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
@@ -654,33 +640,17 @@ namespace FridaGMTool
         static string BuildAnnouncementText(VersionManifestInfo manifest)
         {
             VersionManifestInfo effectiveManifest = manifest ?? CreateDefaultManifest();
-            StringBuilder sb = new StringBuilder();
-            sb.AppendLine("当前版本：v" + CurrentVersionText);
             if (!string.IsNullOrWhiteSpace(effectiveManifest.Notice))
             {
-                string normalized = effectiveManifest.Notice.Trim();
-                if (!normalized.StartsWith("当前版本：", StringComparison.OrdinalIgnoreCase))
-                {
-                    sb.AppendLine(normalized);
-                }
-                else
-                {
-                    string[] lines = normalized.Replace("\r\n", "\n").Split('\n');
-                    for (int i = 1; i < lines.Length; i++)
-                    {
-                        string line = lines[i].Trim();
-                        if (!string.IsNullOrEmpty(line)) sb.AppendLine(line);
-                    }
-                }
+                return effectiveManifest.Notice.Trim();
             }
-
-            return sb.ToString().TrimEnd();
+            return "";
         }
 
         public GMForm()
         {
             Text = "FridaGM 工具 v" + CurrentVersionText;
-            Size = new Size(560, 470);
+            Size = new Size(560, 720);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
@@ -688,118 +658,122 @@ namespace FridaGMTool
             int y = 4;
 
             // === GM 命令 ===
-            grpGM = new Panel { Location = new Point(8, y), Size = new Size(536, 424), BackColor = Color.White };
+            grpGM = new Panel { Location = new Point(8, y), Size = new Size(536, 674), BackColor = Color.White };
             const int rowStep = 34;
             const int sectionGap = 8;
-            chkGod = new CheckBox { Text = "无敌", Size = new Size(110, 26) };
+            chkGod = new CheckBox { Text = "无敌", Size = new Size(118, 28) };
             chkGod.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkGod.Text, BuildCombatExperimentLua(chkGod.Checked ? "god" : "god_off")); };
-            btnStamina = new Button { Text = "锁体力消耗", Size = new Size(110, 26) };
+            btnStamina = new Button { Text = "锁体力消耗", Size = new Size(118, 28) };
             btnStamina.Click += (s, e) => SendExperimentCommand("锁体力消耗", BuildCombatExperimentLua("stamina_lock"));
-            btnStaminaDive = new Button { Text = "无限潜水资源", Size = new Size(110, 26) };
+            btnStaminaDive = new Button { Text = "无限潜水资源", Size = new Size(118, 28) };
             btnStaminaDive.Click += (s, e) => SendExperimentCommand("无限潜水资源", BuildCombatExperimentLua("stamina_dive"));
-            chkInvis = new CheckBox { Text = "隐身", Size = new Size(110, 26) };
+            chkInvis = new CheckBox { Text = "隐身", Size = new Size(118, 28) };
             chkInvis.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkInvis.Text, BuildCombatExperimentLua(chkInvis.Checked ? "invis" : "invis_off")); };
 
-            btnStaminaEmpty = new Button { Text = "清空战斗资源", Size = new Size(110, 26) };
+            btnStaminaEmpty = new Button { Text = "清空战斗资源", Size = new Size(118, 28) };
             btnStaminaEmpty.Click += (s, e) => SendExperimentCommand("清空战斗资源", BuildCombatExperimentLua("stamina_empty"));
-            btnStaminaResetAll = new Button { Text = "恢复体力设置", Size = new Size(110, 26) };
+            btnStaminaResetAll = new Button { Text = "恢复体力设置", Size = new Size(118, 28) };
             btnStaminaResetAll.Click += (s, e) => SendExperimentCommand("恢复体力设置", BuildCombatExperimentLua("stamina_reset_all"));
 
-            chkNpcDumb = new CheckBox { Text = "NPC变笨", Size = new Size(110, 26) };
+            chkNpcDumb = new CheckBox { Text = "NPC变笨", Size = new Size(118, 28) };
             chkNpcDumb.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkNpcDumb.Text, BuildYyLaoLiuLua(chkNpcDumb.Checked ? "yy_npcdumb" : "yy_npcdumb_off")); };
-            chkSuperDodge = new CheckBox { Text = "超级闪避", Size = new Size(110, 26) };
+            chkSuperDodge = new CheckBox { Text = "超级闪避", Size = new Size(118, 28) };
             chkSuperDodge.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkSuperDodge.Text, BuildCombatExperimentLua(chkSuperDodge.Checked ? "super_dodge" : "super_dodge_off")); };
 
-            btnAtkBuff = new Button { Text = "攻击Buff", Size = new Size(110, 26) };
+            btnAtkBuff = new Button { Text = "攻击Buff", Size = new Size(118, 28) };
             btnAtkBuff.Click += (s, e) => SendExperimentCommand("攻击Buff整合", BuildCombatExperimentLua("atkbuff_combo"));
-            btnDefBuff = new Button { Text = "防御Buff", Size = new Size(110, 26) };
+            btnDefBuff = new Button { Text = "防御Buff", Size = new Size(118, 28) };
             btnDefBuff.Click += (s, e) => SendExperimentCommand("防御Buff", BuildCombatExperimentLua("defbuff"));
-            btnMinBuff = new Button { Text = "最小Buff", Size = new Size(110, 26), BackColor = Color.LightGreen };
+            btnMinBuff = new Button { Text = "最小Buff", Size = new Size(118, 28), BackColor = Color.LightGreen };
             btnMinBuff.Click += (s, e) => SendExperimentCommand("最小Buff", BuildLoopFeatureLua("minimal_buff"));
 
-            btnGatherBuff = new Button { Text = "采集Buff", Size = new Size(110, 26) };
+            btnGatherBuff = new Button { Text = "采集Buff", Size = new Size(118, 28) };
             btnGatherBuff.Click += (s, e) => SendExperimentCommand("采集Buff", BuildLoopFeatureLua("gather_buff"));
 
-            btnAuxBuff = new Button { Text = "辅助Buff", Size = new Size(110, 26) };
+            btnAuxBuff = new Button { Text = "辅助Buff", Size = new Size(118, 28) };
             btnAuxBuff.Click += (s, e) => SendExperimentCommand("辅助Buff", BuildLoopFeatureLua("aux_buff"));
-            btnUnknownBuff = new Button { Text = "未知Buff", Size = new Size(110, 26) };
+            btnUnknownBuff = new Button { Text = "未知Buff", Size = new Size(118, 28) };
             btnUnknownBuff.Click += (s, e) => SendExperimentCommand("未知Buff", BuildLoopFeatureLua("unknown_buff"));
-            var btnRemoveAllBuffs = new Button { Text = "移除全部Buff", Size = new Size(110, 26) };
+            var btnRemoveAllBuffs = new Button { Text = "移除全部Buff", Size = new Size(118, 28) };
             btnRemoveAllBuffs.Click += (s, e) => SendExperimentCommand("移除全部Buff", BuildLoopFeatureLua("remove_all_buffs"));
-            btnStealthFlags = new Button { Text = "关闭安全标志", Size = new Size(110, 26) };
+            btnStealthFlags = new Button { Text = "关闭安全标志", Size = new Size(118, 28) };
             btnStealthFlags.Click += (s, e) => SendExperimentCommand("关闭安全标志", BuildLoopFeatureLua("stealth_flags"));
-            var btnYyRemoveBuff = new Button { Text = "备用移除Buff", Size = new Size(110, 26) };
+            var btnYyRemoveBuff = new Button { Text = "备用移除Buff", Size = new Size(118, 28) };
             btnYyRemoveBuff.Click += (s, e) => SendExperimentCommand("备用移除Buff", BuildYyLaoLiuBuffToolLua("yy_remove_buffs"));
 
-            btnLoopBuff = new Button { Text = "循环强力Buff", Size = new Size(110, 26) };
+            btnLoopBuff = new Button { Text = "循环强力Buff", Size = new Size(118, 28) };
             btnLoopBuff.Click += (s, e) => SendExperimentCommand("循环强力Buff", BuildLoopFeatureLua("loop_buff"));
-            btnLoopDefense = new Button { Text = "循环防御Buff", Size = new Size(110, 26) };
+            btnLoopDefense = new Button { Text = "循环防御Buff", Size = new Size(118, 28) };
             btnLoopDefense.Click += (s, e) => SendExperimentCommand("循环防御Buff", BuildLoopFeatureLua("loop_defense"));
-            btnLoopLoot = new Button { Text = "循环自动拾取", Size = new Size(110, 26), BackColor = Color.FromArgb(255, 200, 200) };
+            btnLoopLoot = new Button { Text = "循环自动拾取", Size = new Size(118, 28), BackColor = Color.FromArgb(255, 200, 200) };
             btnLoopLoot.Click += (s, e) => SendExperimentCommand("循环自动拾取", BuildLoopFeatureLua("loop_loot"));
-            btnLoopRecover = new Button { Text = "循环自动恢复", Size = new Size(110, 26) };
+            btnLoopRecover = new Button { Text = "循环自动恢复", Size = new Size(118, 28) };
             btnLoopRecover.Click += (s, e) => SendExperimentCommand("循环自动恢复", BuildLoopFeatureLua("loop_recover"));
 
-            btnYyAutoLoot = new Button { Text = "自动拾取", Size = new Size(110, 26) };
+            btnYyAutoLoot = new Button { Text = "自动拾取", Size = new Size(118, 28) };
             btnYyAutoLoot.Click += (s, e) => SendExperimentCommand("自动拾取", BuildLoopFeatureLua("loot_once"));
-            btnYyRecover = new Button { Text = "一键恢复", Size = new Size(110, 26) };
+            btnYyRecover = new Button { Text = "一键恢复", Size = new Size(118, 28) };
             btnYyRecover.Click += (s, e) => SendExperimentCommand("一键恢复", BuildYyLaoLiuLua("yy_recover"));
 
-            btnRhythmGame = new Button { Text = "NPC节奏游戏", Size = new Size(110, 26) };
+            btnRhythmGame = new Button { Text = "NPC节奏游戏", Size = new Size(118, 28) };
             btnRhythmGame.Click += (s, e) => SendExperimentCommand("NPC节奏游戏", BuildGameFeatureLua("rhythm_game"));
-            btnChessWin = new Button { Text = "象棋秒赢", Size = new Size(110, 26) };
+            btnChessWin = new Button { Text = "象棋秒赢", Size = new Size(118, 28) };
             btnChessWin.Click += (s, e) => SendExperimentCommand("象棋秒赢", BuildGameFeatureLua("chess_win"));
-            btnPitchPot = new Button { Text = "投壶圈变大", Size = new Size(110, 26) };
+            btnPitchPot = new Button { Text = "投壶圈变大", Size = new Size(118, 28) };
             btnPitchPot.Click += (s, e) => SendExperimentCommand("投壶圈变大", BuildGameFeatureLua("pitch_pot_easy"));
 
-            chkOneHit = new CheckBox { Text = "一击必杀", Size = new Size(110, 26) };
+            chkOneHit = new CheckBox { Text = "一击必杀", Size = new Size(118, 28) };
             chkOneHit.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) { if (chkOneHit.Checked) SendExperimentCommand("一击必杀", BuildCombatExperimentLua("onehit")); else SendExperimentCommand("还原一击必杀", BuildLoopFeatureLua("onehit_off")); } };
 
             cmbAtkMul = new ComboBox { Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
             cmbAtkMul.Items.AddRange(new object[] { "x2", "x4", "x8" });
             cmbAtkMul.SelectedIndex = 0;
-            btnApplyAtkMul = new Button { Text = "应用倍率", Size = new Size(100, 26) };
+            btnApplyAtkMul = new Button { Text = "应用倍率", Size = new Size(100, 28) };
             btnApplyAtkMul.Click += (s, e) => ApplyAttackMultiplierSelection();
-            btnResetAtkMul = new Button { Text = "还原倍率", Size = new Size(100, 26) };
+            btnResetAtkMul = new Button { Text = "还原倍率", Size = new Size(100, 28) };
             btnResetAtkMul.Click += (s, e) => SendExperimentCommand("还原攻击倍率", BuildCombatExperimentLua("atk_mul_reset"));
 
             txtDialogSpeed = new TextBox { Size = new Size(120, 24), Text = "80" };
-            btnApplyDialogSpeed = new Button { Text = "应用速度", Size = new Size(100, 26) };
+            btnApplyDialogSpeed = new Button { Text = "应用速度", Size = new Size(100, 28) };
             btnApplyDialogSpeed.Click += (s, e) => ApplyDialogSpeedSelection();
-            btnResetDialogSpeed = new Button { Text = "还原速度", Size = new Size(100, 26) };
+            btnResetDialogSpeed = new Button { Text = "还原速度", Size = new Size(100, 28) };
             btnResetDialogSpeed.Click += (s, e) => SendExperimentCommand("还原速度", BuildLoopFeatureLua("dialog_speed_reset"));
 
             cmbAtkSpeed = new ComboBox { Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
             cmbAtkSpeed.Items.AddRange(new object[] { "x1.5", "x3", "x5", "x7.5", "x10", "x30" });
             cmbAtkSpeed.SelectedIndex = 0;
-            btnApplyAtkSpeed = new Button { Text = "应用速度", Size = new Size(100, 26) };
+            btnApplyAtkSpeed = new Button { Text = "应用速度", Size = new Size(100, 28) };
             btnApplyAtkSpeed.Click += (s, e) => ApplyAtkSpeedSelection();
-            btnResetAtkSpeed = new Button { Text = "还原攻击速度", Size = new Size(100, 26) };
+            btnResetAtkSpeed = new Button { Text = "还原攻击速度", Size = new Size(100, 28) };
             btnResetAtkSpeed.Click += (s, e) => SendExperimentCommand("还原攻击速度", BuildCombatExperimentLua("atk_speed_reset"));
-            grpGM.Size = new Size(536, 424);
-            tabGM = new Panel { Location = new Point(6, 6), Size = new Size(524, 412), BackColor = Color.White };
+            grpGM.Size = new Size(536, 540);
+            tabGM = new Panel { Location = new Point(6, 6), Size = new Size(524, 528), BackColor = Color.White };
             var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(524, 42), BackColor = Color.White };
-            var btnTabInit = new Button { Text = "快速启动", Location = new Point(0, 6), Size = new Size(112, 28), Tag = "nav" };
-            var btnTabBattle = new Button { Text = "功能", Location = new Point(118, 6), Size = new Size(112, 28), Tag = "nav" };
-            var btnTabBuff = new Button { Text = "Buff", Location = new Point(236, 6), Size = new Size(112, 28), Tag = "nav" };
-            var btnTabTools = new Button { Text = "工具", Location = new Point(354, 6), Size = new Size(112, 28), Tag = "nav" };
+            var btnTabInit = new Button { Text = "快速启动", Location = new Point(0, 6), Size = new Size(100, 28), Tag = "nav" };
+            var btnTabBattle = new Button { Text = "功能", Location = new Point(105, 6), Size = new Size(100, 28), Tag = "nav" };
+            var btnTabBuff = new Button { Text = "Buff", Location = new Point(210, 6), Size = new Size(100, 28), Tag = "nav" };
+            var btnTabTools = new Button { Text = "工具", Location = new Point(315, 6), Size = new Size(100, 28), Tag = "nav" };
+            var btnTabCoord = new Button { Text = "传送", Location = new Point(420, 6), Size = new Size(100, 28), Tag = "nav" };
             tabNav.Controls.Add(btnTabInit);
             tabNav.Controls.Add(btnTabBattle);
             tabNav.Controls.Add(btnTabBuff);
             tabNav.Controls.Add(btnTabTools);
+            tabNav.Controls.Add(btnTabCoord);
             tabGM.Controls.Add(tabNav);
 
-            tabInit = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
-            var tabBattle = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
-            var tabBuff = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
-            var tabTools = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 370), BackColor = Color.White };
+            tabInit = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
+            var tabBattle = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
+            var tabBuff = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
+            var tabTools = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
+            var tabCoord = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
             tabGM.Controls.Add(tabInit);
             tabGM.Controls.Add(tabBattle);
             tabGM.Controls.Add(tabBuff);
             tabGM.Controls.Add(tabTools);
+            tabGM.Controls.Add(tabCoord);
 
-            Button[] tabButtons = new Button[] { btnTabInit, btnTabBattle, btnTabBuff, btnTabTools };
-            Panel[] tabPages = new Panel[] { tabInit, tabBattle, tabBuff, tabTools };
+            Button[] tabButtons = new Button[] { btnTabInit, btnTabBattle, btnTabBuff, btnTabTools, btnTabCoord };
+            Panel[] tabPages = new Panel[] { tabInit, tabBattle, tabBuff, tabTools, tabCoord };
             Action<Button, bool> styleNavButton = (button, active) => {
                 button.FlatStyle = FlatStyle.Flat;
                 button.UseVisualStyleBackColor = false;
@@ -823,6 +797,7 @@ namespace FridaGMTool
             btnTabBattle.Click += (s, e) => activateTab(tabBattle, btnTabBattle);
             btnTabBuff.Click += (s, e) => activateTab(tabBuff, btnTabBuff);
             btnTabTools.Click += (s, e) => activateTab(tabTools, btnTabTools);
+            btnTabCoord.Click += (s, e) => activateTab(tabCoord, btnTabCoord);
 
             // ── 初始 tab content ──
             int[] yInit = new int[] { 4 };
@@ -858,6 +833,10 @@ namespace FridaGMTool
             lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(492, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) };
             tabInit.Controls.Add(lblStatus);
             yInit[0] += 22;
+            chkEnableMemory = new CheckBox { Text = "启用内存功能", Location = new Point(12, yInit[0]), Size = new Size(130, 22), ForeColor = Color.FromArgb(192, 0, 0), Checked = false };
+            chkEnableMemory.CheckedChanged += chkEnableMemory_CheckedChanged;
+            tabInit.Controls.Add(chkEnableMemory);
+            yInit[0] += 26;
             tabInit.Controls.Add(new Label { Text = "── 公告 ──", Location = new Point(12, yInit[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
             yInit[0] += 18;
             var noticePanel = new Panel { Location = new Point(12, yInit[0]), Size = new Size(492, 76), BackColor = Color.FromArgb(248, 250, 252) };
@@ -868,6 +847,7 @@ namespace FridaGMTool
             int[] yBattle = new int[] { 4 };
             int[] yBuff = new int[] { 4 };
             int[] yTools = new int[] { 4 };
+            int[] yCoord = new int[] { 4 };
             Func<int, int, Point> pos = (col, yy) => new Point(12 + col * 124, yy);
             Action<Control, string, int[]> addTabSection = (parent, title, yref) => {
                 if (parent.Controls.Count > 0) yref[0] += rowStep + sectionGap;
@@ -894,7 +874,7 @@ namespace FridaGMTool
             place(tabBattle, btnChessWin, 3, yBattle);
             yBattle[0] += rowStep;
             place(tabBattle, btnPitchPot, 0, yBattle);
-            btnCutsceneKill = new Button { Text = "终止过场动画", Size = new Size(110, 26) };
+            btnCutsceneKill = new Button { Text = "终止过场动画", Size = new Size(118, 28) };
             btnCutsceneKill.Click += (s, e) => SendExperimentCommand("终止过场动画", BuildCombatExperimentLua("cutscene_kill"));
             place(tabBattle, btnCutsceneKill, 1, yBattle);
             place(tabBattle, btnStealthFlags, 2, yBattle);
@@ -949,22 +929,118 @@ namespace FridaGMTool
             btnResetAtkSpeed.Location = new Point(334, yTools[0]);
             tabTools.Controls.Add(btnResetAtkSpeed);
 
-            addTabSection(tabTools, "坐标", yTools);
-            Button btnLogPos = new Button { Text = "记录坐标", Size = new Size(118, 28) };
-            btnLogPos.Click += (s, ev) => SendExperimentCommand("记录坐标", BuildLogPositionLua());
-            place(tabTools, btnLogPos, 0, yTools);
-            tabTools.Controls.Add(new Label { Text = "坐标", Location = new Point(138, yTools[0] + 6), Size = new Size(40, 20) });
-            txtCoordInput = new TextBox { Location = new Point(178, yTools[0] + 3), Size = new Size(178, 24), Text = "" };
-            tabTools.Controls.Add(txtCoordInput);
-            Button btnTeleportTo = new Button { Text = "传送", Location = new Point(366, yTools[0]), Size = new Size(74, 28) };
-            btnTeleportTo.Click += (s, ev) => {
-                string coordText = txtCoordInput.Text.Trim();
-                if (string.IsNullOrEmpty(coordText)) { MessageBox.Show("请输入坐标，格式: x,y,z"); return; }
-                MatchCollection matches = Regex.Matches(coordText, @"[-+]?\d+(?:\.\d+)?");
-                if (matches.Count < 3) { MessageBox.Show("请输入三个数字坐标，格式: x,y,z"); return; }
-                SendExperimentCommand("传送到坐标", BuildTeleportToLua(coordText));
+            addTabSection(tabCoord, "坐标管理", yCoord);
+
+            dgvCoords = new DataGridView {
+                Location = new Point(12, yCoord[0]),
+                Size = new Size(500, 110),
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = true,
+                ReadOnly = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                RowHeadersVisible = false,
+                BackgroundColor = Color.White,
+                BorderStyle = BorderStyle.FixedSingle,
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                Font = new Font("Microsoft YaHei UI", 9F),
+                Tag = "mem"
             };
-            tabTools.Controls.Add(btnTeleportTo);
+            dgvCoords.Columns.Add("colIndex", "序号");
+            dgvCoords.Columns.Add("colX", "X");
+            dgvCoords.Columns.Add("colY", "Y");
+            dgvCoords.Columns.Add("colZ", "Z");
+            dgvCoords.Columns.Add("colRemark", "备注");
+            dgvCoords.Columns[0].FillWeight = 50;
+            dgvCoords.Columns[1].FillWeight = 80;
+            dgvCoords.Columns[2].FillWeight = 80;
+            dgvCoords.Columns[3].FillWeight = 80;
+            dgvCoords.Columns[4].FillWeight = 120;
+            tabCoord.Controls.Add(dgvCoords);
+            yCoord[0] += 116;
+
+            int midY = yCoord[0];
+            int btnW = 120, btnH = 26;
+            Button btnSelectCoordFile = new Button { Text = "选择坐标文本", Location = new Point(12, midY), Size = new Size(btnW, btnH), Tag = "mem" };
+            btnSelectCoordFile.Click += (s, ev) => SelectCoordFile();
+            tabCoord.Controls.Add(btnSelectCoordFile);
+
+            Button btnOpenCoordFile = new Button { Text = "打开坐标文本", Location = new Point(12 + btnW + 8, midY), Size = new Size(btnW, btnH), Tag = "mem" };
+            btnOpenCoordFile.Click += (s, ev) => OpenCoordFile();
+            tabCoord.Controls.Add(btnOpenCoordFile);
+
+            int opBtnW = 100, opGap = 6;
+            Button btnReadPos = new Button { Text = "读取当前", Location = new Point(12 + (btnW + 8) * 2, midY), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            btnReadPos.Click += (s, ev) => ReadAndFillPosition();
+            tabCoord.Controls.Add(btnReadPos);
+
+            midY += btnH + 4;
+            yCoord[0] = midY;
+
+            addTabSection(tabCoord, "坐标保存", yCoord);
+
+            int inputY = yCoord[0];
+            int lblW = 24, inputW = 80, inputH = 22;
+            tabCoord.Controls.Add(new Label { Text = "X:", Location = new Point(12, inputY + 3), Size = new Size(lblW, 20), Tag = "mem" });
+            txtCoordX = new TextBox { Location = new Point(36, inputY + 1), Size = new Size(inputW, inputH), Text = "", Tag = "mem" };
+            tabCoord.Controls.Add(txtCoordX);
+
+            tabCoord.Controls.Add(new Label { Text = "Y:", Location = new Point(124, inputY + 3), Size = new Size(lblW, 20), Tag = "mem" });
+            txtCoordY = new TextBox { Location = new Point(148, inputY + 1), Size = new Size(inputW, inputH), Text = "", Tag = "mem" };
+            tabCoord.Controls.Add(txtCoordY);
+
+            tabCoord.Controls.Add(new Label { Text = "Z:", Location = new Point(236, inputY + 3), Size = new Size(lblW, 20), Tag = "mem" });
+            txtCoordZ = new TextBox { Location = new Point(260, inputY + 1), Size = new Size(inputW, inputH), Text = "", Tag = "mem" };
+            tabCoord.Controls.Add(txtCoordZ);
+
+            tabCoord.Controls.Add(new Label { Text = "备注:", Location = new Point(348, inputY + 3), Size = new Size(36, 20), Tag = "mem" });
+            txtCoordRemark = new TextBox { Location = new Point(388, inputY + 1), Size = new Size(124, inputH), Text = "示例", Tag = "mem" };
+            tabCoord.Controls.Add(txtCoordRemark);
+
+            inputY += inputH + 4;
+            tabCoord.Controls.Add(new Label { Text = "文件名:", Location = new Point(12, inputY + 3), Size = new Size(52, 20), Tag = "mem" });
+            txtCoordFileName = new TextBox { Location = new Point(68, inputY + 1), Size = new Size(140, inputH), Text = "示例", Tag = "mem" };
+            tabCoord.Controls.Add(txtCoordFileName);
+
+            Button btnSaveToDesktop = new Button { Text = "保存到桌面", Location = new Point(218, inputY - 1), Size = new Size(100, inputH + 4), Tag = "mem" };
+            btnSaveToDesktop.Click += (s, ev) => SaveCurrentCoordToDesktop();
+            tabCoord.Controls.Add(btnSaveToDesktop);
+
+            inputY += inputH + 6;
+
+            Button btnSetCurrent = new Button { Text = "设为当前", Location = new Point(12, inputY), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            btnSetCurrent.Click += (s, ev) => SetCustomCurrent();
+            tabCoord.Controls.Add(btnSetCurrent);
+
+            Button btnTeleportSelected = new Button { Text = "传送到选中", Location = new Point(12 + opBtnW + opGap, inputY), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            btnTeleportSelected.Click += (s, ev) => TeleportToSelectedCoord();
+            tabCoord.Controls.Add(btnTeleportSelected);
+
+            yCoord[0] = inputY + btnH + 8;
+
+            addTabSection(tabCoord, "坐标初始化", yCoord);
+            Button btnInitCoordHook = new Button { Text = "初始化坐标", Location = new Point(12, yCoord[0]), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            btnInitCoordHook.Click += (s, ev) => InitCoordHook();
+            tabCoord.Controls.Add(btnInitCoordHook);
+            Button btnVerifyAob = new Button { Text = "验证/切换", Location = new Point(12 + opBtnW + opGap, yCoord[0]), Size = new Size(opBtnW, btnH), Tag = "mem" };
+            btnVerifyAob.Click += (s, ev) =>
+            {
+                // 如果有多个slot，每次点击循环切换
+                if (coordHookInjectAddrs.Count > 1)
+                {
+                    int next = (coordHookActiveSlot + 1) % coordHookInjectAddrs.Count;
+                    if (next != coordHookActiveSlot)
+                    {
+                        SwitchCoordSlot(next);
+                    }
+                }
+                VerifyCoordAOB();
+            };
+            tabCoord.Controls.Add(btnVerifyAob);
+            yCoord[0] += btnH + 8;
+
+            txtCoordInput = new TextBox { Text = "" };
 
             grpGM.Controls.Add(tabGM);
             Controls.Add(grpGM);
@@ -1022,7 +1098,6 @@ namespace FridaGMTool
                 GadgetLogFile = UnifiedLogFile;
                 AuxLogFile = UnifiedLogFile;
                 ToolResultFile = Path.Combine(ToolDir, "gm_tool_result.txt");
-                ToolResultCompatFile = Path.Combine(WorkDir, "gm_tool_result.txt");
                 return true;
             }
             catch (Exception ex)
@@ -1043,7 +1118,6 @@ namespace FridaGMTool
             CmdFile = Path.Combine(ToolDir, "gm_cmd.txt");
             CmdResultFile = Path.Combine(ToolDir, "gm_cmd_result.txt");
             ToolResultFile = Path.Combine(ToolDir, "gm_tool_result.txt");
-            ToolResultCompatFile = Path.Combine(WorkDir, "gm_tool_result.txt");
             UnifiedLogFile = Path.Combine(ToolDir, "gm_tool.log");
             GadgetLogFile = UnifiedLogFile;
             AuxLogFile = UnifiedLogFile;
@@ -1312,6 +1386,26 @@ namespace FridaGMTool
             var procs = Process.GetProcessesByName("yysls");
             if (procs.Length == 0) { MessageBox.Show("游戏未运行！请先启动游戏。"); return; }
             int targetPid = procs[0].Id;
+            injectedPID = targetPid;
+            AppendLog("目标进程 PID: " + targetPid);
+            // 自动从运行中的进程检测游戏路径
+            if (string.IsNullOrEmpty(gameRootPath))
+            {
+                try
+                {
+                    string exePath = procs[0].MainModule.FileName;
+                    string binDir = Path.GetDirectoryName(exePath);
+                    string rootDir = Path.GetDirectoryName(binDir);
+                    if (File.Exists(Path.Combine(binDir, GameExeName)))
+                    {
+                        gameRootPath = rootDir;
+                        gameBinPath = binDir;
+                        UpdateCommPaths();
+                        AppendLog("自动检测游戏路径: " + gameRootPath);
+                    }
+                }
+                catch (Exception ex) { AppendLog("自动检测路径失败: " + ex.Message); }
+            }
             SafeDisposeProcesses(procs);
 
             // 注入前生成随机化通信配置
@@ -1637,8 +1731,6 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
             if (commandPending) { AppendLog("上一条命令还在执行，请稍等: " + name); return; }
             commandPending = true;
             SafeDeleteFile(ToolResultFile, "清理功能结果文件失败");
-            if (!string.Equals(ToolResultCompatFile, ToolResultFile, StringComparison.OrdinalIgnoreCase))
-                SafeDeleteFile(ToolResultCompatFile, "清理兼容结果文件失败");
             SendCommand(luaCode);
             AppendLog("实验功能已发送: " + name);
             if (commandResultTimer != null)
@@ -1678,7 +1770,7 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
                     {
                         // 降级：从文件读结果
                         ReadCommandResult(name);
-                        if (IsTerminalResultFile(CmdResultFile) || File.Exists(ToolResultFile) || File.Exists(ToolResultCompatFile) || ticks >= maxPollTicks)
+                        if (IsTerminalResultFile(CmdResultFile) || File.Exists(ToolResultFile) || ticks >= maxPollTicks)
                             finished = true;
                     }
                 }
@@ -1728,11 +1820,40 @@ ATTR = {104009, 104010, 104011, 104012, 104001}";
 
         void ReadFeatureResult(string name)
         {
-            string resultPath = File.Exists(ToolResultFile) ? ToolResultFile : (File.Exists(ToolResultCompatFile) ? ToolResultCompatFile : "");
+            string resultPath = File.Exists(ToolResultFile) ? ToolResultFile : "";
             if (string.IsNullOrEmpty(resultPath)) return;
 
             var lines = File.ReadAllLines(resultPath);
             if (lines.Length == 0) return;
+
+            if (pendingReadPosition)
+            {
+                pendingReadPosition = false;
+                foreach (string line in lines)
+                {
+                    if (line.StartsWith("POS\t"))
+                    {
+                        string posStr = line.Substring(4).Trim();
+                        string[] parts = posStr.Split(',');
+                        if (parts.Length >= 3)
+                        {
+                            double px, py, pz;
+                            if (double.TryParse(parts[0].Trim(), out px) &&
+                                double.TryParse(parts[1].Trim(), out py) &&
+                                double.TryParse(parts[2].Trim(), out pz))
+                            {
+                                txtCoordX.Text = px.ToString("F1");
+                                txtCoordY.Text = py.ToString("F1");
+                                txtCoordZ.Text = pz.ToString("F1");
+                                lastReadX = px; lastReadY = py; lastReadZ = pz;
+                                AppendLog("当前坐标: X=" + px.ToString("F1") + " Y=" + py.ToString("F1") + " Z=" + pz.ToString("F1"));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
             int start = Math.Max(0, lines.Length - 16);
             AppendLog(name + " 返回结果:");
             for (int i = start; i < lines.Length; i++) AppendLog("  " + lines[i]);
@@ -1831,21 +1952,366 @@ if #parts < 3 then __add('error', '需要x,y,z三个坐标'); return end
 local tx, ty, tz = parts[1], parts[2], parts[3]
 local mp = type(G) == 'table' and G.main_player or nil
 if not mp then __add('error', 'main_player missing'); return end
+
+-- 先读取当前位置用于对比
+local function getpos()
+  local p = mp.get_position and {pcall(function() return mp:get_position() end)}
+  if p and p[1] and p[2] then return p[2] end
+  if mp.position then return mp.position end
+  return nil
+end
+local before = getpos()
+if before then
+  __add('before', string.format('%.1f,%.1f,%.1f', before.x or 0, before.y or 0, before.z or 0))
+end
+
+-- 尝试停止当前移动/导航
+for _, stopname in ipairs({'stop_movement', 'stop', 'stop_nav', 'cancel_move', 'halt', 'idle'}) do
+  if mp[stopname] then pcall(function() mp[stopname](mp) end) end
+end
+
+-- 尝试找到movement组件
+local mover = nil
+if mp.__components__ then
+  for _, comp in pairs(mp.__components__) do
+    if type(comp) == 'table' or type(comp) == 'userdata' then
+      for _, name in ipairs({'movement', 'navigator', 'motor', 'character_movement', 'locomotion'}) do
+        if comp[name] or comp['get_' .. name] then mover = comp; break end
+      end
+      if mover then break end
+    end
+  end
+end
+
+local succeeded = false
+local function try_set(name, fn)
+  if succeeded then return end
+  local ok, err = pcall(fn)
+  if ok then
+    -- 等一小段时间后读回位置验证
+    for i=1,20 do end -- busy wait tiny bit
+    local after = getpos()
+    if after and before then
+      local dx = (after.x or 0) - (before.x or 0)
+      local dy = (after.y or 0) - (before.y or 0)
+      local dz = (after.z or 0) - (before.z or 0)
+      local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+      __add('check', name .. ' after=(' .. string.format('%.1f,%.1f,%.1f', after.x or 0, after.y or 0, after.z or 0) .. ') dist=' .. string.format('%.1f', dist))
+      if dist > 1 then
+        __add('传送', name .. ' OK -> ' .. string.format('%.1f,%.1f,%.1f', tx, ty, tz)); succeeded = true; return
+      end
+    else
+      __add('传送', name .. ' called (cannot verify) -> ' .. string.format('%.1f,%.1f,%.1f', tx, ty, tz)); succeeded = true; return
+    end
+  end
+end
+
+-- 尝试XZY顺序 (UE4常见: X=Forward, Z=Right, Y=Up)
+try_set('set_position(xzy)', function() mp:set_position(tx, tz, ty) end)
+try_set('set_position(xyz)', function() mp:set_position(tx, ty, tz) end)
+
+-- 更多API名，两种顺序
+for _, name in ipairs({'tp_to', 'warp_to', 'teleport_to', 'move_to', 'goto_pos', 'set_pos', 'transfer_to', 'jump_to'}) do
+  if mp[name] then
+    try_set(name .. '(xyz)', function() mp[name](mp, tx, ty, tz) end)
+    try_set(name .. '(xzy)', function() mp[name](mp, tx, tz, ty) end)
+  end
+end
+
+-- 尝试mover组件方法
+if mover then
+  for _, name in ipairs({'set_position', 'set_world_position', 'teleport', 'move_to'}) do
+    if mover[name] then
+      try_set('mover.' .. name .. '(xyz)', function() mover[name](mover, tx, ty, tz) end)
+      try_set('mover.' .. name .. '(xzy)', function() mover[name](mover, tx, tz, ty) end)
+    end
+  end
+end
+
+-- 尝试通过G的GM命令传送
+__try('gm_tp', function()
+  if type(G.gm) == 'table' or type(G.gm) == 'userdata' then
+    if G.gm.tp then G.gm:tp(tx, ty, tz); __add('传送', 'G.gm:tp'); succeeded = true end
+    if G.gm.teleport then G.gm:teleport(tx, ty, tz); __add('传送', 'G.gm:teleport'); succeeded = true end
+  end
+  if G.tp then G:tp(tx, ty, tz); __add('传送', 'G:tp'); succeeded = true end
+  if G.teleport then G:teleport(tx, ty, tz); __add('传送', 'G:teleport'); succeeded = true end
+end)
+
+if not succeeded then
+  -- 最终尝试: 直接写position字段+停止移动
+  pcall(function()
+    if mp.stop_movement then mp:stop_movement() end
+    if mp.position then
+      local pos = mp.position
+      if type(pos) == 'table' then
+        pos.x = tx; pos.y = ty; pos.z = tz
+      elseif type(pos) == 'userdata' then
+        if pos.set_x then pos:set_x(tx) end
+        if pos.set_y then pos:set_y(ty) end
+        if pos.set_z then pos:set_z(tz) end
+      end
+      __add('传送', 'direct position write -> ' .. string.format('%.1f,%.1f,%.1f', tx, ty, tz))
+      succeeded = true
+    end
+  end)
+end
+
+-- 传送后再停止一次移动
+for _, stopname in ipairs({'stop_movement', 'stop', 'idle'}) do
+  if mp[stopname] then pcall(function() mp[stopname](mp) end) end
+end
+
+local after = getpos()
+if after then
+  __add('after', string.format('%.1f,%.1f,%.1f', after.x or 0, after.y or 0, after.z or 0))
+end
+if not succeeded then __add('传送', '失败: 所有API尝试完毕，位置未变化') end
+");
+        }
+
+        string BuildReadPositionLua()
+        {
+            return BuildLuaEnvelope("read_pos", @"
+__try('read_position', function()
+  local mp = type(G) == 'table' and G.main_player or nil
+  if not mp then error('main_player missing') end
+  local pos = nil
+  local posSrc = ''
+  if mp.get_position then
+    local ok, p = pcall(function() return mp:get_position() end)
+    if ok and p then pos = p; posSrc = 'get_position()' end
+  end
+  if not pos and mp.position then
+    pos = mp.position; posSrc = '.position'
+  end
+  if not pos and mp.pos then
+    pos = mp.pos; posSrc = '.pos'
+  end
+  if not pos and mp.coord then
+    pos = mp.coord; posSrc = '.coord'
+  end
+  if pos then
+    local x = pos.x or pos.X or 0
+    local y = pos.y or pos.Y or 0
+    local z = pos.z or pos.Z or 0
+    __add('POS', string.format('%.1f,%.1f,%.1f', x, y, z))
+    __add('info', 'pos from ' .. posSrc)
+  else
+    __add('POS', '0,0,0')
+    __add('error', '无法获取位置, 列出mp字段')
+    local fields = {}
+    for k, v in pairs(mp) do
+      if type(v) ~= 'function' then fields[#fields+1] = k .. ':' .. type(v) end
+    end
+    __add('fields', table.concat(fields, ', '))
+  end
+end)
+");
+        }
+
+        string BuildPressKeyLua(string key)
+        {
+            return BuildLuaEnvelope("press_key", @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then __add('error', 'main_player missing'); return end
 local apis = {
-  {'set_position', function() mp:set_position(tx, ty, tz) end},
-  {'tp_to', function() mp:tp_to(tx, ty, tz) end},
-  {'warp_to', function() mp:warp_to(tx, ty, tz) end},
-  {'teleport_to', function() mp:teleport_to(tx, ty, tz) end},
-  {'position_assign', function() mp.position.x = tx; mp.position.y = ty; mp.position.z = tz end},
+  {'press_key', function() if mp.press_key then mp:press_key('" + EscapeLuaString(key) + @"') end end},
+  {'key_press', function() if mp.key_press then mp:key_press('" + EscapeLuaString(key) + @"') end end},
+  {'simulate_key', function() if mp.simulate_key then mp:simulate_key('" + EscapeLuaString(key) + @"') end end},
 }
 for _, api in ipairs(apis) do
   local name, fn = api[1], api[2]
   local ok, err = pcall(fn)
-  if ok then __add('传送', name .. ' -> ' .. string.format('%.1f,%.1f,%.1f', tx, ty, tz)); return end
-  __add('skip', name .. ': ' .. tostring(err))
+  if ok then __add('按键', name .. ' -> " + EscapeLuaString(key) + @"'); return end
 end
-__add('传送', '失败: 无可用传送API')
+__add('按键', '无可用按键API')
 ");
+        }
+
+        string BuildJackBuffLua(bool enable)
+        {
+            return BuildLuaEnvelope("jack_buff", @"
+local mp = type(G) == 'table' and G.main_player or nil
+if not mp then __add('error', 'main_player missing'); return end
+local ok = false
+if " + (enable ? "true" : "false") + @" then
+  local buffIds = {720001, 720002, 720003, 110101, 110102}
+  for _, id in ipairs(buffIds) do
+    local r, e = pcall(function() if mp.add_buff then mp:add_buff(id) end end)
+    if r then ok = true end
+  end
+else
+  local buffIds = {720001, 720002, 720003, 110101, 110102}
+  for _, id in ipairs(buffIds) do
+    pcall(function()
+      if mp.buff_remove_by_No then mp:buff_remove_by_No(id)
+      elseif mp.remove_buff then mp:remove_buff(id) end
+    end)
+  end
+  ok = true
+end
+__add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
+");
+        }
+
+        // ===== Coordinate Management Methods =====
+
+        string coordFilePath = "";
+        double lastReadX, lastReadY, lastReadZ;
+        bool pendingReadPosition = false;
+
+        void SelectCoordFile()
+        {
+            var dlg = new OpenFileDialog { Filter = "文本文件|*.txt|所有文件|*.*", Title = "选择坐标文本文件" };
+            if (dlg.ShowDialog() == DialogResult.OK)
+            {
+                coordFilePath = dlg.FileName;
+                LoadCoordsFromFile(coordFilePath);
+            }
+        }
+
+        void OpenCoordFile()
+        {
+            if (string.IsNullOrEmpty(coordFilePath)) { MessageBox.Show("请先选择坐标文本文件"); return; }
+            if (!File.Exists(coordFilePath)) { MessageBox.Show("文件不存在: " + coordFilePath); return; }
+            try { System.Diagnostics.Process.Start("notepad.exe", coordFilePath); }
+            catch (Exception ex) { MessageBox.Show("打开失败: " + ex.Message); }
+        }
+
+        void SetCustomCurrent()
+        {
+            double x, y, z;
+            if (!double.TryParse(txtCoordX.Text.Trim(), out x)) { MessageBox.Show("X坐标无效"); return; }
+            if (!double.TryParse(txtCoordY.Text.Trim(), out y)) { MessageBox.Show("Y坐标无效"); return; }
+            if (!double.TryParse(txtCoordZ.Text.Trim(), out z)) { MessageBox.Show("Z坐标无效"); return; }
+            lastReadX = x; lastReadY = y; lastReadZ = z;
+        }
+
+        void LoadCoordsFromFile(string path)
+        {
+            try
+            {
+                string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                dgvCoords.Rows.Clear();
+                int idx = 1;
+                foreach (string line in lines)
+                {
+                    string trimmed = line.Trim();
+                    if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#") || trimmed.StartsWith(";")) continue;
+                    char[] seps = new char[] { ',', ' ', '\t' };
+                    string[] parts = trimmed.Split(seps, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 3)
+                    {
+                        double cx, cy, cz;
+                        string remark = "";
+                        int off = 0;
+                        if (parts.Length >= 4 && !double.TryParse(parts[0], out cx))
+                        {
+                            remark = parts[0]; off = 1;
+                        }
+                        if (double.TryParse(parts[off], out cx) &&
+                            double.TryParse(parts[off + 1], out cy) &&
+                            double.TryParse(parts[off + 2], out cz))
+                        {
+                            if (off == 0 && parts.Length > 3) remark = string.Join(" ", parts, 3, parts.Length - 3);
+                            dgvCoords.Rows.Add(idx++, cx.ToString("F1"), cy.ToString("F1"), cz.ToString("F1"), remark);
+                        }
+                    }
+                }
+                AppendLog("已加载坐标文件: " + path + " (" + (idx - 1) + "个坐标)");
+            }
+            catch (Exception ex) { AppendLog("加载坐标文件失败: " + ex.Message); }
+        }
+
+        void AddCoordToList()
+        {
+            double x, y, z;
+            if (!double.TryParse(txtCoordX.Text.Trim(), out x)) { MessageBox.Show("X坐标无效"); return; }
+            if (!double.TryParse(txtCoordY.Text.Trim(), out y)) { MessageBox.Show("Y坐标无效"); return; }
+            if (!double.TryParse(txtCoordZ.Text.Trim(), out z)) { MessageBox.Show("Z坐标无效"); return; }
+            string remark = txtCoordRemark.Text.Trim();
+            int idx = dgvCoords.Rows.Count + 1;
+            dgvCoords.Rows.Add(idx, x.ToString("F1"), y.ToString("F1"), z.ToString("F1"), remark);
+        }
+
+        void TeleportToSelectedCoord()
+        {
+            if (dgvCoords.SelectedRows.Count == 0) { MessageBox.Show("请先选择一个坐标"); return; }
+            var row = dgvCoords.SelectedRows[0];
+            if (row.Cells[1].Value == null) return;
+            double tx, ty, tz;
+            string sx = row.Cells[1].Value != null ? row.Cells[1].Value.ToString() : "";
+            string sy = row.Cells[2].Value != null ? row.Cells[2].Value.ToString() : "";
+            string sz = row.Cells[3].Value != null ? row.Cells[3].Value.ToString() : "";
+            if (!double.TryParse(sx, out tx) || !double.TryParse(sy, out ty) || !double.TryParse(sz, out tz))
+            { MessageBox.Show("坐标数据无效"); return; }
+            if (WriteMemCoord(tx, ty, tz))
+            {
+                string remark = row.Cells[4].Value != null ? row.Cells[4].Value.ToString() : "";
+                AppendLog("传送成功 -> " + (string.IsNullOrEmpty(remark) ? "" : remark + " ") + string.Format("X={0:F1} Y={1:F1} Z={2:F1}", tx, ty, tz));
+            }
+            else
+            {
+                AppendLog("传送失败");
+            }
+        }
+
+        void SaveCurrentCoordToDesktop()
+        {
+            string fileName = txtCoordFileName.Text.Trim();
+            if (string.IsNullOrEmpty(fileName)) fileName = "coords";
+            if (!fileName.EndsWith(".txt")) fileName += ".txt";
+            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+            string path = Path.Combine(desktop, fileName);
+            try
+            {
+                using (var sw = new StreamWriter(path, false, Encoding.UTF8))
+                {
+                    sw.WriteLine("# 坐标文件 格式: 名称,X,Y,Z 或 X,Y,Z");
+                    foreach (DataGridViewRow row in dgvCoords.Rows)
+                    {
+                        string remark = row.Cells[4].Value != null ? row.Cells[4].Value.ToString() : "";
+                        string line = string.Format("{0},{1},{2},{3}",
+                            string.IsNullOrEmpty(remark) ? ("坐标" + row.Cells[0].Value) : remark,
+                            row.Cells[1].Value, row.Cells[2].Value, row.Cells[3].Value);
+                        sw.WriteLine(line);
+                    }
+                }
+                AppendLog("坐标已保存到: " + path);
+                coordFilePath = path;
+            }
+            catch (Exception ex) { MessageBox.Show("保存失败: " + ex.Message); }
+        }
+
+        void SendCommandNoLog(string luaCode)
+        {
+            if (!isReady) return;
+            try { SendCommand(luaCode); } catch { }
+        }
+
+        void ReadAndFillPosition()
+        {
+            double px, py, pz;
+            bool needDebug = (lastReadX == 0 && lastReadY == 0 && lastReadZ == 0);
+            if (!ReadMemCoord(out px, out py, out pz, needDebug))
+            {
+                // 第一次失败用诊断模式重试
+                if (!needDebug && !ReadMemCoord(out px, out py, out pz, true))
+                {
+                    MessageBox.Show("读取坐标失败，请确认:\n1. 已点击'初始化坐标'\n2. 以管理员身份运行\n3. 游戏已进入场景");
+                    return;
+                }
+            }
+            if (px == 0 && py == 0 && pz == 0)
+            {
+                AppendLog("警告: 读取到的坐标全为0，可能未进入游戏场景或偏移已过期");
+            }
+            txtCoordX.Text = px.ToString("F1");
+            txtCoordY.Text = py.ToString("F1");
+            txtCoordZ.Text = pz.ToString("F1");
+            lastReadX = px; lastReadY = py; lastReadZ = pz;
+            AppendLog("当前坐标: X=" + px.ToString("F1") + " Y(高)=" + py.ToString("F1") + " Z=" + pz.ToString("F1"));
         }
 
         // Lua builder entry points.
@@ -3577,6 +4043,1020 @@ end
             return WriteMemory(hProcess, address, BitConverter.GetBytes(value));
         }
 
+        double ReadDouble(IntPtr hProcess, long address)
+        {
+            byte[] buffer = new byte[8];
+            if (!ReadMemory(hProcess, address, buffer)) return double.NaN;
+            return BitConverter.ToDouble(buffer, 0);
+        }
+
+        bool WriteDouble(IntPtr hProcess, long address, double value)
+        {
+            return WriteMemory(hProcess, address, BitConverter.GetBytes(value));
+        }
+
+        // ===== 内存坐标读写 (代码洞Hook + Double) =====
+        // 原理: 通过AOB找到 vmovsd [rcx+0x340],xmm0 写入指令，hook后把rcx写入固定内存
+        // C#读取该固定内存获取当前玩家坐标对象基址，再+0x340/0x348/0x350读写Double坐标
+        // 这是AAA.exe的"自动适配"原理——不需要静态指针链，每次启动hook自动捕获
+        // 坐标为 Double(8字节)，CT表注释确认是Double类型
+        // AOB特征码: C5 F8 11 81 40 03 00 00 (vmovsd [rcx+0x340], xmm0)
+        const string COORD_AOB = "C5 F8 11 81 40 03 00 00";
+        const int COORD_AOB_LEN = 8;
+        // 偏移顺序从 AAA.exe 实际写入捕获确认: X=0x340, Z=0x348, Y=0x350
+        const long COORD_OFFSET_X = 0x340;
+        const long COORD_OFFSET_Z = 0x348;  // Z(高度,小值约-47)
+        const long COORD_OFFSET_Y = 0x350;  // Y(纵向,大值约-1900)
+        // 坐标合理性上限(优化项8): 超过此值视为非法坐标, 用于指针链/AOB 验证
+        const double COORD_SANITY_MAX = 100000.0;
+
+        // ===== 静态指针链方案 (从 AAA.exe 提取, 2026-06-29) =====
+        // 指针链: yysls.exe + STATIC_OFFSET → P1 → P1+0x58 → P2 → P2+0x00 → OBJ(玩家)
+        // OBJ+0x340=X(Double), OBJ+0x348=Z(Double), OBJ+0x350=Y(Double)
+        // 优点: 直接获取玩家对象(非相机), 无需Frida注入, 无需Hook触发
+        // AOB扫描确认 yysls 代码段有17处 RIP-relative 引用此偏移, 游戏更新后可自动定位
+        const long STATIC_OFFSET_DEFAULT = 0x083F46D8;  // 从 AAA.exe 抓取的硬编码偏移
+        const long PTR_STEP1_OFFSET = 0x58;
+        const long PTR_STEP2_OFFSET = 0x00;
+        long cachedStaticOffset = 0;  // 运行时确定的静态偏移(硬编码或AOB扫描)
+        bool lastResolveWasPtrChain = false;  // 上次ResolveCoordBase是否用静态指针链
+        // 优化项4: OBJ 基址结果缓存(500ms TTL), 避免高频读坐标时重复解三层指针链
+        // PID 校验: 游戏重启/PID 变化时自动失效(地址在新进程空间无意义)
+        long cachedObjBase = 0;
+        int cachedObjBasePid = 0;
+        DateTime cachedObjBaseExpireAt = DateTime.MinValue;
+
+        // 相机到玩家的偏移校正(相机坐标 + 偏移 = 玩家坐标)
+        // 实测: 相机X=-2606.4, 玩家X=-2589.58 → 偏移=+16.82
+        //       相机Y=-43.8, 玩家Y=-41.9 → 偏移=+1.9
+        //       相机Z=-1861.7, 玩家Z=-1811.02 → 偏移=+50.68
+        const double CAM_OFFSET_X = 16.82;
+        const double CAM_OFFSET_Y = 1.9;
+        const double CAM_OFFSET_Z = 50.68;
+
+        // 注入时记录的目标进程ID，用于R/RH双客户端场景下精确定位
+        int injectedPID = 0;
+        long cachedModuleBase = 0; // 缓存游戏模块基址
+        IntPtr coordHookStoreAddr = IntPtr.Zero; // 存储rcx的固定内存地址(多slot共享)
+        int coordHookActiveSlot = 0; // 当前使用的slot索引
+
+        // ===== 长驻进程句柄 (优化项1: ReadMemCoord/WriteMemCoord 复用) =====
+        // 避免每次读写坐标都 OpenProcess/CloseHandle; 失效(PID变化/进程退出)时自动重开
+        // 生命周期: 首次 AcquireCoordHandle 打开 → 复用 → 失效重开 / OnFormClosing 释放
+        IntPtr persistentCoordHProcess = IntPtr.Zero;
+        int persistentCoordPid = 0;
+        List<long> coordHookInjectAddrs = new List<long>(); // 被hook的指令地址列表
+        List<IntPtr> coordHookCaveAddrs = new List<IntPtr>(); // 代码洞地址列表
+        List<byte[]> coordHookOrigBytesList = new List<byte[]>(); // 原始指令字节列表
+
+        // 解析 AOB 字符串为字节数组 + 通配掩码; "??" 表示任意字节
+        static bool ParseAOB(string aob, out byte[] pattern, out bool[] mask)
+        {
+            pattern = null; mask = null;
+            if (string.IsNullOrEmpty(aob)) return false;
+            string[] tokens = aob.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length == 0) return false;
+            var pat = new byte[tokens.Length];
+            var msk = new bool[tokens.Length];
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                string t = tokens[i];
+                if (t == "??" || t == "?")
+                {
+                    pat[i] = 0; msk[i] = false;
+                }
+                else
+                {
+                    byte b;
+                    if (!byte.TryParse(t, System.Globalization.NumberStyles.HexNumber, null, out b)) return false;
+                    pat[i] = b; msk[i] = true;
+                }
+            }
+            pattern = pat; mask = msk;
+            return true;
+        }
+
+        // 在 [moduleBase, moduleBase+moduleSize) 范围内分块扫描 AOB，返回所有命中绝对地址
+        List<long> AOBScanRegions(IntPtr hProcess, long moduleBase, int moduleSize, byte[] pattern, bool[] mask)
+        {
+            var hits = new List<long>();
+            if (pattern == null || pattern.Length == 0) return hits;
+            const int chunkSize = 0x10000;
+            int overlap = pattern.Length - 1;
+            byte[] chunk = new byte[chunkSize + overlap];
+            long end = moduleBase + moduleSize;
+            for (long start = moduleBase; start < end; start += chunkSize)
+            {
+                int toRead = (int)Math.Min(chunkSize + overlap, end - start);
+                IntPtr bytesRead;
+                if (!ReadProcessMemory(hProcess, new IntPtr(start), chunk, new IntPtr(toRead), out bytesRead)) continue;
+                int read = (int)bytesRead.ToInt64();
+                for (int i = 0; i <= read - pattern.Length; i++)
+                {
+                    bool match = true;
+                    for (int j = 0; j < pattern.Length; j++)
+                    {
+                        if (mask[j] && chunk[i + j] != pattern[j]) { match = false; break; }
+                    }
+                    if (match) hits.Add(start + i);
+                }
+            }
+            return hits;
+        }
+
+        // AOB扫描第一个匹配
+        long AOBScanFirst(IntPtr hProcess, long moduleBase, int moduleSize, byte[] pattern, bool[] mask)
+        {
+            var hits = AOBScanRegions(hProcess, moduleBase, moduleSize, pattern, mask);
+            return hits.Count > 0 ? hits[0] : 0;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MEMORY_BASIC_INFORMATION
+        {
+            public IntPtr BaseAddress;
+            public IntPtr AllocationBase;
+            public uint AllocationProtect;
+            public IntPtr RegionSize;
+            public uint State;
+            public uint Protect;
+            public uint Type;
+        }
+        [DllImport("kernel32.dll")]
+        static extern int VirtualQueryEx(IntPtr hProcess, IntPtr lpAddress, out MEMORY_BASIC_INFORMATION lpBuffer, IntPtr dwLength);
+
+        // 在targetAddr附近分配可执行内存(±2GB范围内，用于JMP)
+        IntPtr AllocateNearMemory(IntPtr hProcess, long targetAddr, int size)
+        {
+            long searchStart = targetAddr - 0x7FFF0000;
+            if (searchStart < 0x10000) searchStart = 0x10000;
+            long searchEnd = targetAddr + 0x7FFF0000;
+            long addr = searchStart;
+            MEMORY_BASIC_INFORMATION mbi;
+            while (addr < searchEnd)
+            {
+                int result = VirtualQueryEx(hProcess, new IntPtr(addr), out mbi, new IntPtr(Marshal.SizeOf(typeof(MEMORY_BASIC_INFORMATION))));
+                if (result == 0) break;
+                // MEM_FREE = 0x10000
+                if (mbi.State == 0x10000 && mbi.RegionSize.ToInt64() >= size)
+                {
+                    long allocAddr = (mbi.BaseAddress.ToInt64() + 0xFFFF) & ~0xFFFFL;
+                    IntPtr allocated = VirtualAllocEx(hProcess, new IntPtr(allocAddr), (uint)size, MEM_COMMIT | 0x2000, PAGE_EXECUTE_READWRITE);
+                    if (allocated != IntPtr.Zero) return allocated;
+                }
+                addr = mbi.BaseAddress.ToInt64() + mbi.RegionSize.ToInt64();
+            }
+            // 回退: 不限制位置
+            return VirtualAllocEx(hProcess, IntPtr.Zero, (uint)size, MEM_COMMIT | 0x2000, PAGE_EXECUTE_READWRITE);
+        }
+
+        // 初始化坐标: AOB扫描所有vmovsd指令 + 逐个尝试hook找到热路径
+        void InitCoordHook()
+        {
+            // 如果已经初始化过，先清理旧hook
+            if (coordHookInjectAddrs.Count > 0 || coordHookStoreAddr != IntPtr.Zero)
+            {
+                CleanupCoordHook();
+            }
+
+            IntPtr hProcess; Process proc;
+            if (!OpenGameProcessForCoord(out hProcess, out proc)) return;
+            try
+            {
+                long moduleBase = proc.MainModule.BaseAddress.ToInt64();
+                cachedModuleBase = moduleBase;
+                AppendLog(string.Format("[坐标] 模块基址=0x{0:X}", moduleBase));
+
+                // AOB扫描所有 vmovsd [rcx+0x340], xmm0 指令
+                byte[] pattern; bool[] mask;
+                ParseAOB(COORD_AOB, out pattern, out mask);
+                AppendLog("[坐标] 正在扫描AOB: " + COORD_AOB);
+                List<long> hits = AOBScanRegions(hProcess, moduleBase, proc.MainModule.ModuleMemorySize, pattern, mask);
+                if (hits.Count == 0)
+                {
+                    AppendLog("[坐标] 未找到AOB! 游戏可能已更新或已被hook");
+                    AppendLog("[坐标] 若游戏未重启，请先重启游戏清除旧hook");
+                    return;
+                }
+                AppendLog(string.Format("[坐标] 找到 {0} 个匹配指令:", hits.Count));
+                for (int i = 0; i < hits.Count; i++)
+                {
+                    AppendLog(string.Format("  [{0}] 0x{1:X} (base+0x{2:X})", i, hits[i], hits[i] - moduleBase));
+                }
+
+                // 分配共享的存储rcx内存
+                // 改为多slot: 每个hook独占一个slot(16字节)，避免覆盖
+                // slot布局: [0]=hook0_rcx, [8]=hook1_rcx, [16]=hook2_rcx...
+                int slotCount = hits.Count;
+                coordHookStoreAddr = VirtualAllocEx(hProcess, IntPtr.Zero, (uint)(slotCount * 16), MEM_COMMIT, PAGE_READWRITE);
+                if (coordHookStoreAddr == IntPtr.Zero)
+                {
+                    AppendLog("[坐标] 分配存储内存失败");
+                    return;
+                }
+                WriteMemory(hProcess, coordHookStoreAddr.ToInt64(), new byte[slotCount * 16]);
+
+                // 同时hook所有指令，每个写入独立slot
+                for (int i = 0; i < hits.Count; i++)
+                {
+                    long injectAddr = hits[i];
+                    AppendLog(string.Format("[坐标] 安装hook [{0}] 0x{1:X}...", i, injectAddr));
+                    if (TryInstallHook(hProcess, injectAddr, i))
+                    {
+                        coordHookActiveSlot = i; // 默认用第一个
+                    }
+                }
+
+                // 等待500ms让所有hook触发
+                System.Threading.Thread.Sleep(500);
+
+                // 显示每个hook捕获的坐标
+                AppendLog(string.Format("[坐标] 各hook捕获结果:"));
+                int bestSlot = -1;
+                double bestDiff = double.MaxValue;
+                for (int i = 0; i < slotCount; i++)
+                {
+                    long slotAddr = coordHookStoreAddr.ToInt64() + i * 16;
+                    long capturedRcx = ReadInt64(hProcess, slotAddr);
+                    if (capturedRcx != 0)
+                    {
+                        double x = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_X);
+                        double y = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Y);
+                        double z = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Z);
+                        AppendLog(string.Format("  [slot {0}] rcx=0x{1:X} X={2:F1} Y(高)={3:F1} Z={4:F1}",
+                            i, capturedRcx, x, y, z));
+                        if (bestSlot < 0) { bestSlot = i; bestDiff = 0; }
+                    }
+                    else
+                    {
+                        AppendLog(string.Format("  [slot {0}] 未触发", i));
+                    }
+                }
+
+                if (bestSlot >= 0)
+                {
+                    coordHookActiveSlot = bestSlot;
+                    long capturedRcx = ReadInt64(hProcess, coordHookStoreAddr.ToInt64() + bestSlot * 16);
+                    double x = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_X);
+                    double y = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Y);
+                    double z = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Z);
+                    AppendLog(string.Format("[坐标] 初始化成功! 使用slot {0}, rcx=0x{1:X}", bestSlot, capturedRcx));
+                    AppendLog(string.Format("[坐标] X={0:F1} Y(高)={1:F1} Z={2:F1}", x, y, z));
+                    AppendLog("[坐标] 如坐标不对，可在'验证'中切换slot");
+                    AppendLog("[坐标] Hook已安装，游戏运行期间自动跟踪玩家坐标对象");
+                }
+                else
+                {
+                    AppendLog("[坐标] 所有指令均未触发，请在游戏中移动后再次点击'初始化坐标'");
+                }
+            }
+            catch (Exception ex) { AppendLog("[坐标] 初始化异常: " + ex.Message); }
+            finally { CloseHandle(hProcess); SafeDisposeProcess(proc); }
+        }
+
+        // 尝试在指定地址安装代码洞hook，slotIndex指定rcx写入的slot
+        bool TryInstallHook(IntPtr hProcess, long injectAddr, int slotIndex)
+        {
+            // 读取原始指令字节
+            byte[] origBytes = new byte[COORD_AOB_LEN];
+            if (!ReadMemory(hProcess, injectAddr, origBytes))
+            {
+                AppendLog("[坐标] 读取原始指令失败");
+                return false;
+            }
+
+            // 分配代码洞
+            IntPtr caveAddr = AllocateNearMemory(hProcess, injectAddr, 64);
+            if (caveAddr == IntPtr.Zero)
+            {
+                AppendLog("[坐标] 分配代码洞失败");
+                return false;
+            }
+
+            // 构建代码洞:
+            // 1. mov r11, storeAddr+slotIndex*16; mov [r11], reg (保存寄存器到指定slot)
+            // 2. 原始指令 (movss [reg+0x340], xmm0)
+            // 3. jmp 返回地址
+            // 解析ModRM字节(origBytes[3])获取寄存器: rm = modrm & 0x07
+            byte modrm = origBytes[3];
+            int rm = modrm & 0x07;
+            // mov [r11], reg 的字节: 49 89 <modrm_for_mov>
+            // mod=00, reg=目标寄存器, rm=011(r11因为REX.B)
+            // modrm_for_mov = 0x00 | (reg << 3) | 0x03
+            // reg编码: rax=0,rcx=1,rdx=2,rbx=3,rsp=4,rbp=5,rsi=6,rdi=7
+            byte[] saveRegByte = new byte[] {
+                0x03, // rax: 49 89 03
+                0x0B, // rcx: 49 89 0B
+                0x13, // rdx: 49 89 13
+                0x1B, // rbx: 49 89 1B
+                0x23, // rsp: 49 89 23
+                0x2B, // rbp: 49 89 2B
+                0x33, // rsi: 49 89 33
+                0x3B, // rdi: 49 89 3B
+            };
+            string[] regNames = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi" };
+            byte saveByte = (rm < 8) ? saveRegByte[rm] : (byte)0x0B;
+            AppendLog(string.Format("[坐标]   ModRM=0x{0:X2} 寄存器={1}", modrm, (rm < 8) ? regNames[rm] : "??"));
+
+            long storeAddr = coordHookStoreAddr.ToInt64() + slotIndex * 16;
+            long caveAddrLong = caveAddr.ToInt64();
+            long returnAddr = injectAddr + COORD_AOB_LEN;
+            List<byte> cave = new List<byte>();
+            // mov r11, storeAddr (49 BB <8字节>)
+            cave.Add(0x49); cave.Add(0xBB);
+            cave.AddRange(BitConverter.GetBytes(storeAddr));
+            // mov [r11], reg (49 89 <saveByte>)
+            cave.Add(0x49); cave.Add(0x89); cave.Add(saveByte);
+            // 原始指令
+            cave.AddRange(origBytes);
+            // jmp returnAddr
+            long jmpOffset = returnAddr - (caveAddrLong + cave.Count + 5);
+            cave.Add(0xE9);
+            cave.AddRange(BitConverter.GetBytes((int)jmpOffset));
+
+            if (!WriteMemory(hProcess, caveAddrLong, cave.ToArray()))
+            {
+                AppendLog("[坐标] 写入代码洞失败");
+                VirtualFreeEx(hProcess, caveAddr, 0, MEM_RELEASE);
+                return false;
+            }
+
+            // 修改原始指令为JMP到代码洞
+            uint oldProtect;
+            VirtualProtectEx(hProcess, new IntPtr(injectAddr), (uint)COORD_AOB_LEN, PAGE_EXECUTE_READWRITE, out oldProtect);
+            long jmpToCave = caveAddrLong - (injectAddr + 5);
+            byte[] jmpBytes = new byte[COORD_AOB_LEN];
+            jmpBytes[0] = 0xE9;
+            Array.Copy(BitConverter.GetBytes((int)jmpToCave), 0, jmpBytes, 1, 4);
+            for (int i = 5; i < COORD_AOB_LEN; i++) jmpBytes[i] = 0x90;
+            bool ok = WriteMemory(hProcess, injectAddr, jmpBytes);
+            VirtualProtectEx(hProcess, new IntPtr(injectAddr), (uint)COORD_AOB_LEN, oldProtect, out oldProtect);
+
+            if (!ok)
+            {
+                AppendLog("[坐标] 写入JMP失败");
+                VirtualFreeEx(hProcess, caveAddr, 0, MEM_RELEASE);
+                return false;
+            }
+
+            // 记录hook信息
+            coordHookInjectAddrs.Add(injectAddr);
+            coordHookCaveAddrs.Add(caveAddr);
+            coordHookOrigBytesList.Add(origBytes);
+            return true;
+        }
+
+        // 清理坐标hook: 恢复原始指令 + 释放内存
+        void CleanupCoordHook()
+        {
+            IntPtr hProcess; Process proc;
+            if (!OpenGameProcessForCoord(out hProcess, out proc)) return;
+            try { CleanupCoordHookCore(hProcess); }
+            finally { CloseHandle(hProcess); SafeDisposeProcess(proc); }
+        }
+
+        void CleanupCoordHook(IntPtr hProcess)
+        {
+            CleanupCoordHookCore(hProcess);
+        }
+
+        void CleanupCoordHookCore(IntPtr hProcess)
+        {
+            // 恢复所有原始指令
+            for (int i = 0; i < coordHookInjectAddrs.Count && i < coordHookOrigBytesList.Count; i++)
+            {
+                try
+                {
+                    uint oldProtect;
+                    long addr = coordHookInjectAddrs[i];
+                    byte[] bytes = coordHookOrigBytesList[i];
+                    VirtualProtectEx(hProcess, new IntPtr(addr), (uint)bytes.Length, PAGE_EXECUTE_READWRITE, out oldProtect);
+                    WriteMemory(hProcess, addr, bytes);
+                    VirtualProtectEx(hProcess, new IntPtr(addr), (uint)bytes.Length, oldProtect, out oldProtect);
+                }
+                catch { }
+            }
+            coordHookInjectAddrs.Clear();
+            coordHookOrigBytesList.Clear();
+
+            // 释放所有代码洞
+            for (int i = 0; i < coordHookCaveAddrs.Count; i++)
+            {
+                try { VirtualFreeEx(hProcess, coordHookCaveAddrs[i], 0, MEM_RELEASE); } catch { }
+            }
+            coordHookCaveAddrs.Clear();
+
+            // 释放存储内存
+            if (coordHookStoreAddr != IntPtr.Zero)
+            {
+                try { VirtualFreeEx(hProcess, coordHookStoreAddr, 0, MEM_RELEASE); } catch { }
+                coordHookStoreAddr = IntPtr.Zero;
+            }
+        }
+
+        // 验证: 输出hook状态和当前坐标
+        void VerifyCoordAOB()
+        {
+            IntPtr hProcess; Process proc;
+            if (!OpenGameProcessForCoord(out hProcess, out proc)) return;
+            try
+            {
+                long moduleBase = proc.MainModule.BaseAddress.ToInt64();
+                cachedModuleBase = moduleBase;
+                AppendLog(string.Format("[验证] yysls.exe=0x{0:X}", moduleBase));
+                AppendLog(string.Format("[验证] Hook状态: {0}个hook, 当前slot={1}, store=0x{2:X}",
+                    coordHookInjectAddrs.Count, coordHookActiveSlot, coordHookStoreAddr.ToInt64()));
+
+                if (coordHookStoreAddr == IntPtr.Zero)
+                {
+                    AppendLog("[验证] 未初始化，请先点击'初始化坐标'");
+                    return;
+                }
+
+                // 显示所有slot的坐标
+                AppendLog(string.Format("[验证] 各slot捕获结果:"));
+                for (int i = 0; i < coordHookInjectAddrs.Count; i++)
+                {
+                    long slotAddr = coordHookStoreAddr.ToInt64() + i * 16;
+                    long capturedRcx = ReadInt64(hProcess, slotAddr);
+                    if (capturedRcx != 0)
+                    {
+                        double x = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_X);
+                        double y = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Y);
+                        double z = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Z);
+                        string mark = (i == coordHookActiveSlot) ? " *" : "";
+                        AppendLog(string.Format("  [slot {0}] rcx=0x{1:X} X={2:F2} Y(高)={3:F2} Z={4:F2}{5}",
+                            i, capturedRcx, x, y, z, mark));
+                    }
+                    else
+                    {
+                        AppendLog(string.Format("  [slot {0}] 未触发", i));
+                    }
+                }
+
+                // 显示当前slot的详细内存
+                long curRcx = ReadInt64(hProcess, coordHookStoreAddr.ToInt64() + coordHookActiveSlot * 16);
+                if (curRcx == 0)
+                {
+                    AppendLog("[验证] 当前slot未触发，请在游戏中移动");
+                    return;
+                }
+                AppendLog(string.Format("[验证] 当前slot {0} 详细内存(Double):", coordHookActiveSlot));
+                for (long off = 0x330; off <= 0x360; off += 8)
+                {
+                    double v = ReadDouble(hProcess, curRcx + off);
+                    AppendLog(string.Format("  [rcx+0x{0:X}] = {1:F3}", off, v));
+                }
+
+                // ===== 从相机对象回溯搜索玩家对象 =====
+                // 相机对象(rcx)内部某处存有指向玩家对象的指针
+                // 玩家对象的+0x340/+0x348/+0x350是Float坐标(CT表确认)
+                // 扫描rcx前0x800字节的所有8字节值作为指针,检查目标+0x340是否有Float坐标
+                AppendLog("[验证] 从相机对象搜索玩家对象(扫描指针链)...");
+                double camX = ReadDouble(hProcess, curRcx + COORD_OFFSET_X);
+                double camY = ReadDouble(hProcess, curRcx + COORD_OFFSET_Y);
+                double camZ = ReadDouble(hProcess, curRcx + COORD_OFFSET_Z);
+                AppendLog(string.Format("[验证] 相机坐标: X={0:F1} Y={1:F1} Z={2:F1}", camX, camY, camZ));
+
+                int foundPlayers = 0;
+                long bestPlayerPtr = 0;
+                double bestPlayerDiff = double.MaxValue;
+                // 扫描相机对象前0x2000字节(扩大范围),找指向玩家对象的指针
+                // 玩家对象的+0x340/+0x348/+0x350存Float坐标
+                AppendLog("[验证] 扫描相机对象0x2000字节找玩家指针...");
+                for (long off = 0; off < 0x2000; off += 8)
+                {
+                    long maybePtr;
+                    try { maybePtr = ReadInt64(hProcess, curRcx + off); }
+                    catch { continue; }
+                    if (maybePtr < 0x10000 || maybePtr > 0x7FFFFFFFFFFF) continue;
+                    // 读Float坐标(用try防止不可读地址)
+                    float px, py, pz;
+                    try
+                    {
+                        px = ReadFloat(hProcess, maybePtr + 0x340);
+                        py = ReadFloat(hProcess, maybePtr + 0x348);
+                        pz = ReadFloat(hProcess, maybePtr + 0x350);
+                    }
+                    catch { continue; }
+                    // 验证是否像坐标(范围合理)
+                    if (Math.Abs(px) < 100000 && Math.Abs(py) < 100000 && Math.Abs(pz) < 100000 &&
+                        (px != 0 || py != 0 || pz != 0))
+                    {
+                        // 同时尝试Double读取
+                        double dx = 0, dy = 0, dz = 0;
+                        try
+                        {
+                            dx = ReadDouble(hProcess, maybePtr + 0x340);
+                            dy = ReadDouble(hProcess, maybePtr + 0x348);
+                            dz = ReadDouble(hProcess, maybePtr + 0x350);
+                        }
+                        catch {}
+                        double diffF = Math.Abs(px - camX) + Math.Abs(py - camY) + Math.Abs(pz - camZ);
+                        double diffD = Math.Abs(dx - camX) + Math.Abs(dy - camY) + Math.Abs(dz - camZ);
+                        AppendLog(string.Format("  [rcx+0x{0:X}] -> 0x{1:X} F:X={2:F1} Y={3:F1} Z={4:F1} (差={5:F0}) | D:X={6:F1} Y={7:F1} Z={8:F1} (差={9:F0})",
+                            off, maybePtr, px, py, pz, diffF, dx, dy, dz, diffD));
+                        foundPlayers++;
+                        // 选差值最小的(优先Double,因为相机是Double)
+                        double minDiff = Math.Min(diffF, diffD);
+                        if (minDiff < bestPlayerDiff) { bestPlayerDiff = minDiff; bestPlayerPtr = maybePtr; }
+                    }
+                }
+                if (foundPlayers == 0)
+                {
+                    AppendLog("[验证] 未找到玩家对象,尝试搜索附近堆内存...");
+                    // 扫描rcx指向的对象+0x340偏移处可能存的指针(二级间接)
+                    // 略
+                }
+                else
+                {
+                    AppendLog(string.Format("[验证] 找到{0}个候选玩家对象,最佳: 0x{1:X} (差={2:F1})",
+                        foundPlayers, bestPlayerPtr, bestPlayerDiff));
+                    // 保存到额外slot(用slot 10)
+                    long extraSlot = coordHookStoreAddr.ToInt64() + 10 * 16;
+                    WriteMemory(hProcess, extraSlot, BitConverter.GetBytes(bestPlayerPtr));
+                    AppendLog(string.Format("[验证] 玩家对象已存到slot 10,可在切换slot后测试传送"));
+                }
+            }
+            catch (Exception ex) { AppendLog("[验证] 异常: " + ex.Message); }
+            finally { CloseHandle(hProcess); SafeDisposeProcess(proc); }
+        }
+
+        // 切换当前使用的slot
+        void SwitchCoordSlot(int slot)
+        {
+            // slot 0-9 是hook捕获的(Double相机坐标), slot 10+是回溯找到的(Float玩家对象)
+            int maxSlot = Math.Max(coordHookInjectAddrs.Count - 1, 10);
+            if (slot < 0 || slot > maxSlot)
+            {
+                AppendLog(string.Format("[坐标] slot {0} 不存在，有效范围: 0-{1}", slot, maxSlot));
+                return;
+            }
+            coordHookActiveSlot = slot;
+            string type = (slot >= 10) ? "Float玩家对象" : "Double相机";
+            AppendLog(string.Format("[坐标] 已切换到slot {0} ({1})", slot, type));
+        }
+
+        bool OpenGameProcessForCoord(out IntPtr hProcess, out Process proc)
+        {
+            hProcess = IntPtr.Zero;
+            proc = null;
+            Process[] procs = Process.GetProcessesByName("yysls");
+            if (procs.Length == 0) { AppendLog("坐标操作失败: 未找到游戏进程"); return false; }
+            if (injectedPID != 0)
+            {
+                foreach (Process p in procs)
+                {
+                    if (p.Id == injectedPID) { proc = p; break; }
+                }
+            }
+            if (proc == null) proc = procs[0];
+            for (int i = 0; i < procs.Length; i++)
+            {
+                if (procs[i] != proc) SafeDisposeProcess(procs[i]);
+            }
+            hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, proc.Id);
+            if (hProcess == IntPtr.Zero) { AppendLog("坐标操作失败: 无法打开进程(请以管理员运行)"); SafeDisposeProcess(proc); proc = null; return false; }
+            return true;
+        }
+
+        // 获取坐标读写用的长驻进程句柄 (优化项1)
+        // 与 OpenGameProcessForCoord 区别: 句柄长驻复用, 调用方不要 CloseHandle
+        // 仅用于 ReadMemCoord/WriteMemCoord 热路径; 一次性操作(Init/Verify/Cleanup)仍用 OpenGameProcessForCoord
+        // 失效条件: 进程退出 / PID 变化(游戏重启或切换注入目标) → 自动重开
+        IntPtr AcquireCoordHandle()
+        {
+            // 解析目标 PID (优先 injectedPID, 否则取第一个 yysls 进程)
+            int targetPid = 0;
+            Process[] procs = Process.GetProcessesByName("yysls");
+            if (procs.Length == 0) { AppendLog("坐标操作失败: 未找到游戏进程"); return IntPtr.Zero; }
+            try
+            {
+                if (injectedPID != 0)
+                {
+                    foreach (Process p in procs) { if (p.Id == injectedPID) { targetPid = injectedPID; break; } }
+                }
+                if (targetPid == 0) targetPid = procs[0].Id;
+            }
+            finally { for (int i = 0; i < procs.Length; i++) SafeDisposeProcess(procs[i]); }
+
+            // 复用长驻句柄: PID 一致且进程仍存活
+            if (persistentCoordHProcess != IntPtr.Zero && persistentCoordPid == targetPid && IsCoordPidAlive(targetPid))
+            {
+                return persistentCoordHProcess;
+            }
+
+            // 长驻句柄失效或 PID 变化, 先释放旧的再重开
+            if (persistentCoordHProcess != IntPtr.Zero)
+            {
+                try { CloseHandle(persistentCoordHProcess); } catch { }
+                persistentCoordHProcess = IntPtr.Zero;
+                persistentCoordPid = 0;
+            }
+            IntPtr h = OpenProcess(PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION, false, targetPid);
+            if (h == IntPtr.Zero) { AppendLog("坐标操作失败: 无法打开进程(请以管理员运行)"); return IntPtr.Zero; }
+            persistentCoordHProcess = h;
+            persistentCoordPid = targetPid;
+            return h;
+        }
+
+        // 轻量检测 PID 是否仍存活 (用于长驻句柄失效判断)
+        bool IsCoordPidAlive(int pid)
+        {
+            if (pid == 0) return false;
+            try { Process p = Process.GetProcessById(pid); p.Dispose(); return true; }
+            catch { return false; }
+        }
+
+        // 通过hook捕获的rcx值解析坐标基址
+        bool ResolveCoordBase(IntPtr hProcess, out long ptr2, bool debug = false)
+        {
+            ptr2 = 0;
+            lastResolveWasPtrChain = false;
+            // 优先尝试静态指针链方案(从AAA.exe提取, 直接获取玩家对象)
+            if (ResolveCoordBaseByPtrChain(hProcess, out ptr2, debug))
+            {
+                lastResolveWasPtrChain = true;
+                return true;
+            }
+            // 后备: 使用Hook捕获的rcx(可能命中相机对象)
+            if (coordHookStoreAddr != IntPtr.Zero)
+            {
+                long slotAddr = coordHookStoreAddr.ToInt64() + coordHookActiveSlot * 16;
+                long capturedRcx = ReadInt64(hProcess, slotAddr);
+                if (capturedRcx == 0)
+                {
+                    if (debug) AppendLog(string.Format("[坐标] 静态指针链失败且slot {0} 尚未捕获rcx", coordHookActiveSlot));
+                    return false;
+                }
+                // 验证地址合理性
+                if (capturedRcx < 0x10000 || capturedRcx > 0x7FFFFFFFFFFF)
+                {
+                    if (debug) AppendLog(string.Format("[坐标] rcx值异常: 0x{0:X}", capturedRcx));
+                    return false;
+                }
+                ptr2 = capturedRcx;
+                if (debug) AppendLog(string.Format("[坐标] 使用Hook后备方案, rcx=0x{0:X}", capturedRcx));
+                return true;
+            }
+            if (debug) AppendLog("[坐标] 未初始化且静态指针链失败");
+            return false;
+        }
+
+        // 静态指针链方案: yysls.exe + STATIC_OFFSET → +0x58 → +0x00 → OBJ(玩家)
+        // 从 AAA.exe 提取, 直接获取玩家对象(非相机), 无需Frida注入
+        bool ResolveCoordBaseByPtrChain(IntPtr hProcess, out long ptr2, bool debug = false)
+        {
+            ptr2 = 0;
+            if (cachedModuleBase == 0) return false;
+
+            // 优化项4: 500ms 内复用 OBJ 基址, 跳过三层指针链 RPM
+            // PID 校验确保游戏重启后缓存自动失效
+            if (cachedObjBase != 0 && cachedObjBasePid == persistentCoordPid && DateTime.Now < cachedObjBaseExpireAt)
+            {
+                ptr2 = cachedObjBase;
+                if (debug) AppendLog(string.Format("[坐标] 使用缓存OBJ=0x{0:X}", cachedObjBase));
+                return true;
+            }
+
+            // 确定静态偏移(硬编码优先, 失败则AOB扫描)
+            long staticOffset = cachedStaticOffset != 0 ? cachedStaticOffset : STATIC_OFFSET_DEFAULT;
+
+            // Step 1: [yysls_base + staticOffset] → P1
+            long addr1 = cachedModuleBase + staticOffset;
+            long p1 = ReadInt64(hProcess, addr1);
+            if (p1 == 0)
+            {
+                // 硬编码偏移可能失效, 触发后台AOB扫描(优化项2: 不再阻塞 UI 线程)
+                if (cachedStaticOffset == 0 && !aobScanInProgress)
+                {
+                    if (debug) AppendLog("[坐标] 硬编码偏移失效, 启动后台AOB扫描...");
+                    StartAOBScanBackground();
+                }
+                else if (debug && aobScanInProgress)
+                {
+                    AppendLog("[坐标] AOB扫描进行中, 请稍后重试");
+                }
+                return false;
+            }
+            // P1 应是堆地址, 不是模块地址
+            if (p1 < 0x10000 || (p1 >= cachedModuleBase && p1 < cachedModuleBase + 0x10000000))
+            {
+                if (debug) AppendLog(string.Format("[坐标] P1值异常: 0x{0:X}", p1));
+                return false;
+            }
+
+            // Step 2: [P1 + 0x58] → P2
+            long p2 = ReadInt64(hProcess, p1 + PTR_STEP1_OFFSET);
+            if (p2 == 0 || p2 < 0x10000)
+            {
+                if (debug) AppendLog(string.Format("[坐标] P2无效: 0x{0:X}", p2));
+                return false;
+            }
+
+            // Step 3: [P2 + 0x00] → OBJ(玩家对象)
+            long obj = ReadInt64(hProcess, p2 + PTR_STEP2_OFFSET);
+            if (obj == 0 || obj < 0x10000 || obj > 0x7FFFFFFFFFFF)
+            {
+                if (debug) AppendLog(string.Format("[坐标] OBJ无效: 0x{0:X}", obj));
+                return false;
+            }
+
+            // 验证坐标合理性(读取X, 应在合理范围)
+            double x = ReadDouble(hProcess, obj + COORD_OFFSET_X);
+            if (double.IsNaN(x) || double.IsInfinity(x) || Math.Abs(x) > COORD_SANITY_MAX)
+            {
+                if (debug) AppendLog(string.Format("[坐标] OBJ+0x340值异常: {0}", x));
+                return false;
+            }
+
+            ptr2 = obj;
+            cachedStaticOffset = staticOffset;  // 缓存成功偏移
+            // 优化项4: 缓存 OBJ 基址, 500ms TTL
+            cachedObjBase = obj;
+            cachedObjBasePid = persistentCoordPid;
+            cachedObjBaseExpireAt = DateTime.Now.AddMilliseconds(500);
+            if (debug) AppendLog(string.Format("[坐标] 静态指针链成功: OBJ=0x{0:X} X={1:F1}", obj, x));
+            return true;
+        }
+
+        // 优化项2: AOB 后台扫描标志, 防止重复触发; 扫描期间 ResolveCoordBaseByPtrChain 返回 false
+        bool aobScanInProgress = false;
+
+        // 优化项2: 后台启动 AOB 扫描, 完成后回 UI 线程更新 cachedStaticOffset
+        // 扫描期间(约数百毫秒)传送/读坐标会短暂失败, 用户重试即可
+        void StartAOBScanBackground()
+        {
+            if (aobScanInProgress) return;
+            if (cachedModuleBase == 0) return;
+            // 后台线程需独立 PID 打开句柄, 不依赖 UI 线程的 persistentCoordHProcess
+            int targetPid = persistentCoordPid != 0 ? persistentCoordPid : injectedPID;
+            if (targetPid == 0) { AppendLog("[坐标] AOB扫描取消: 无目标PID"); return; }
+            aobScanInProgress = true;
+            AppendLog("[坐标] AOB后台扫描启动...");
+            long moduleBase = cachedModuleBase;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                long foundOffset = 0;
+                IntPtr h = IntPtr.Zero;
+                try
+                {
+                    h = OpenProcess(PROCESS_VM_READ, false, targetPid);
+                    if (h != IntPtr.Zero)
+                        foundOffset = AOBScanStaticOffsetCore(h, moduleBase);
+                }
+                catch (Exception ex) { Debug.WriteLine("AOB background scan failed: " + ex.Message); }
+                finally { if (h != IntPtr.Zero) try { CloseHandle(h); } catch { } }
+                // 回 UI 线程更新缓存字段
+                try
+                {
+                    BeginInvoke((Action)(() =>
+                    {
+                        aobScanInProgress = false;
+                        if (foundOffset != 0)
+                        {
+                            cachedStaticOffset = foundOffset;
+                            // 优化项4: 新偏移生效, 清空旧 OBJ 缓存强制下次重新解析
+                            cachedObjBase = 0;
+                            AppendLog(string.Format("[坐标] AOB后台扫描完成, STATIC_OFFSET=0x{0:X}", foundOffset));
+                        }
+                        else
+                        {
+                            AppendLog("[坐标] AOB后台扫描未找到有效偏移");
+                        }
+                    }));
+                }
+                catch { aobScanInProgress = false; }  // 窗体可能已关闭
+            });
+        }
+
+        // AOB扫描定位 STATIC_OFFSET: 搜索 mov r64,[rip+disp32] 指向的目标地址
+        // yysls 代码段有17处 RIP-relative 引用 STATIC_OFFSET, 可稳定定位
+        // 优化项2: 重构为纯函数(参数化 moduleBase), 供后台线程调用, 不依赖 UI 字段
+        long AOBScanStaticOffsetCore(IntPtr hProcess, long moduleBase)
+        {
+            // 读取前64MB代码段
+            int scanSize = 0x4000000;  // 64MB
+            byte[] code = new byte[scanSize];
+            IntPtr bytesRead;
+            if (!ReadProcessMemory(hProcess, new IntPtr(moduleBase), code, new IntPtr(scanSize), out bytesRead))
+                return 0;
+            int len = (int)bytesRead;
+
+            // 统计每个被引用偏移的出现次数
+            var offsetCounts = new System.Collections.Generic.Dictionary<long, int>();
+            // 搜索 48 8B 05/0D/15/1D/25/2D/35/3D (mov r64,[rip+disp32])
+            // 和 48 8D 05/0D/15/1D/25/2D/35/3D (lea r64,[rip+disp32])
+            for (int i = 0; i < len - 7; i++)
+            {
+                if (code[i] != 0x48) continue;
+                if (code[i + 1] != 0x8B && code[i + 1] != 0x8D) continue;
+                byte modrm = code[i + 2];
+                if ((modrm & 0xC7) != 0x05) continue;  // [rip+disp32]
+                int disp = BitConverter.ToInt32(code, i + 3);
+                long insAddr = moduleBase + i;
+                long target = insAddr + 7 + disp;
+                if (target < moduleBase || target >= moduleBase + 0x10000000) continue;
+                long offset = target - moduleBase;
+                if (offsetCounts.ContainsKey(offset))
+                    offsetCounts[offset]++;
+                else
+                    offsetCounts[offset] = 1;
+            }
+
+            // 找出被引用>=3次且能通过指针链验证的偏移
+            // (17处引用中, STATIC_OFFSET 被引用最多)
+            var sorted = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<long, int>>(offsetCounts);
+            sorted.Sort((a, b) => b.Value.CompareTo(a.Value));
+
+            foreach (var kv in sorted)
+            {
+                if (kv.Value < 3) break;  // 至少被引用3次
+                long off = kv.Key;
+                // 验证: 读取指针链第一步
+                long p1 = ReadInt64(hProcess, moduleBase + off);
+                if (p1 == 0 || p1 < 0x10000) continue;
+                if (p1 >= moduleBase && p1 < moduleBase + 0x10000000) continue;
+                // 验证: 读取 P1+0x58
+                long p2 = ReadInt64(hProcess, p1 + PTR_STEP1_OFFSET);
+                if (p2 == 0 || p2 < 0x10000) continue;
+                // 验证: 读取 P2+0x00
+                long obj = ReadInt64(hProcess, p2 + PTR_STEP2_OFFSET);
+                if (obj == 0 || obj < 0x10000 || obj > 0x7FFFFFFFFFFF) continue;
+                // 验证: 读取坐标
+                double x = ReadDouble(hProcess, obj + COORD_OFFSET_X);
+                if (double.IsNaN(x) || Math.Abs(x) > COORD_SANITY_MAX) continue;
+
+                AppendLog(string.Format("[坐标] AOB扫描找到STATIC_OFFSET=0x{0:X} (引用{1}次)", off, kv.Value));
+                return off;
+            }
+            AppendLog("[坐标] AOB扫描未找到有效STATIC_OFFSET");
+            return 0;
+        }
+
+        // 通过hook捕获的寄存器值读取坐标 (Double) + 相机偏移校正
+        bool ReadMemCoord(out double x, out double y, out double z, bool debug = false)
+        {
+            x = y = z = 0;
+            IntPtr hProcess = AcquireCoordHandle();  // 优化项1: 长驻句柄复用
+            if (hProcess == IntPtr.Zero) return false;
+            try
+            {
+                long ptr2;
+                if (!ResolveCoordBase(hProcess, out ptr2, debug)) return false;
+                double rawX, rawY, rawZ;
+                // 静态指针链方案: 直接玩家对象, 全Double, 无需相机校正
+                if (lastResolveWasPtrChain)
+                {
+                    rawX = ReadDouble(hProcess, ptr2 + COORD_OFFSET_X);
+                    rawY = ReadDouble(hProcess, ptr2 + COORD_OFFSET_Y);
+                    rawZ = ReadDouble(hProcess, ptr2 + COORD_OFFSET_Z);
+                }
+                // Hook后备方案: slot 10+ 是Float玩家对象, 其他是Double相机
+                else if (coordHookActiveSlot >= 10)
+                {
+                    rawX = ReadFloat(hProcess, ptr2 + COORD_OFFSET_X);
+                    rawY = ReadFloat(hProcess, ptr2 + COORD_OFFSET_Y);
+                    rawZ = ReadFloat(hProcess, ptr2 + COORD_OFFSET_Z);
+                }
+                else
+                {
+                    rawX = ReadDouble(hProcess, ptr2 + COORD_OFFSET_X);
+                    rawY = ReadDouble(hProcess, ptr2 + COORD_OFFSET_Y);
+                    rawZ = ReadDouble(hProcess, ptr2 + COORD_OFFSET_Z);
+                    // 相机坐标 + 偏移 = 玩家坐标
+                    rawX += CAM_OFFSET_X;
+                    rawY += CAM_OFFSET_Y;
+                    rawZ += CAM_OFFSET_Z;
+                }
+                x = rawX; y = rawY; z = rawZ;
+                if (debug) AppendLog(string.Format("[坐标] ptr2=0x{0:X} X={1:F1} Y(高)={2:F1} Z={3:F1}", ptr2, x, y, z));
+                return true;
+            }
+            catch (Exception ex) { AppendLog("读取坐标异常: " + ex.Message); return false; }
+            // 优化项1: 不在此 CloseHandle, 长驻句柄由 AcquireCoordHandle/OnFormClosing 管理生命周期
+        }
+
+        // 通过hook捕获的寄存器值写入坐标 + 冻结
+        bool WriteMemCoord(double x, double y, double z)
+        {
+            if (!chkEnableMemory.Checked)
+            {
+                AppendLog("传送失败: 请先勾选'启用内存功能'");
+                return false;
+            }
+            IntPtr hProcess = AcquireCoordHandle();  // 优化项1: 长驻句柄复用
+            if (hProcess == IntPtr.Zero) return false;
+            try
+            {
+                long ptr2;
+                if (!ResolveCoordBase(hProcess, out ptr2, true))
+                {
+                    AppendLog("传送失败: 无法解析坐标基址");
+                    return false;
+                }
+
+                // 静态指针链方案: 直接写玩家对象, 全Double, 无需相机校正
+                // Hook后备方案: slot 10+ 写Float, 其他写Double(相机坐标=玩家目标-偏移)
+                bool ok = true;
+                if (lastResolveWasPtrChain)
+                {
+                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_X, x);
+                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Y, y);
+                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Z, z);
+                    AppendLog(string.Format("[传送] 写入玩家坐标: X={0:F1} Y(高)={1:F1} Z={2:F1}", x, y, z));
+                }
+                else if (coordHookActiveSlot >= 10)
+                {
+                    ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_X, (float)x);
+                    ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_Y, (float)y);
+                    ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_Z, (float)z);
+                }
+                else
+                {
+                    // 写入相机坐标 = 玩家目标坐标 - 偏移
+                    double camX = x - CAM_OFFSET_X;
+                    double camY = y - CAM_OFFSET_Y;
+                    double camZ = z - CAM_OFFSET_Z;
+                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_X, camX);
+                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Y, camY);
+                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Z, camZ);
+                    AppendLog(string.Format("[传送] 写入相机坐标: X={0:F1} Y={1:F1} Z={2:F1}", camX, camY, camZ));
+                }
+
+                // 关闭上一次冻结 (优化项1: 句柄长驻, 仅停止定时器, 不 CloseHandle)
+                if (coordFreezeTimer != null && coordFreezeTimer.Enabled)
+                {
+                    coordFreezeTimer.Stop();
+                }
+
+                // 启动冻结：短时间反复写入防止引擎覆盖
+                // 注意: lockCoordHProcess 复用长驻句柄, CoordFreezeTick 不应 CloseHandle 它
+                lockCoordX = x; lockCoordY = y; lockCoordZ = z;
+                lockCoordBase = ptr2;
+                lockCoordHProcess = hProcess;
+                lockCoordSlot = coordHookActiveSlot;
+                lockCoordIsPtrChain = lastResolveWasPtrChain;
+                coordFreezeCount = 0;
+                if (coordFreezeTimer == null)
+                {
+                    coordFreezeTimer = new System.Windows.Forms.Timer();
+                    coordFreezeTimer.Interval = 16;
+                    coordFreezeTimer.Tick += CoordFreezeTick;
+                }
+                coordFreezeTimer.Start();
+                return ok;
+            }
+            catch (Exception ex) { AppendLog("传送异常: " + ex.Message); return false; }
+            // 优化项1: 不在此 CloseHandle, 长驻句柄由 AcquireCoordHandle/OnFormClosing 管理生命周期
+        }
+
+        double lockCoordX, lockCoordY, lockCoordZ;
+        long lockCoordBase;
+        IntPtr lockCoordHProcess;
+        int coordFreezeCount;
+        int lockCoordSlot; // 记录冻结时的slot,区分Float/Double
+        bool lockCoordIsPtrChain; // 冻结时是否用静态指针链方案
+        System.Windows.Forms.Timer coordFreezeTimer;
+
+        void CoordFreezeTick(object sender, EventArgs e)
+        {
+            coordFreezeCount++;
+            // 优化项3: 句柄空校验, 防止定时器多触发一次 tick 后写入已关闭/无效句柄
+            if (lockCoordHProcess == IntPtr.Zero) return;
+            try
+            {
+                if (lockCoordIsPtrChain)
+                {
+                    // 静态指针链方案: 直接写玩家对象Double坐标
+                    WriteDouble(lockCoordHProcess, lockCoordBase + COORD_OFFSET_X, lockCoordX);
+                    WriteDouble(lockCoordHProcess, lockCoordBase + COORD_OFFSET_Y, lockCoordY);
+                    WriteDouble(lockCoordHProcess, lockCoordBase + COORD_OFFSET_Z, lockCoordZ);
+                }
+                else if (lockCoordSlot >= 10)
+                {
+                    WriteFloat(lockCoordHProcess, lockCoordBase + COORD_OFFSET_X, (float)lockCoordX);
+                    WriteFloat(lockCoordHProcess, lockCoordBase + COORD_OFFSET_Y, (float)lockCoordY);
+                    WriteFloat(lockCoordHProcess, lockCoordBase + COORD_OFFSET_Z, (float)lockCoordZ);
+                }
+                else
+                {
+                    // 冻结写入相机坐标(玩家目标-偏移)
+                    WriteDouble(lockCoordHProcess, lockCoordBase + COORD_OFFSET_X, lockCoordX - CAM_OFFSET_X);
+                    WriteDouble(lockCoordHProcess, lockCoordBase + COORD_OFFSET_Y, lockCoordY - CAM_OFFSET_Y);
+                    WriteDouble(lockCoordHProcess, lockCoordBase + COORD_OFFSET_Z, lockCoordZ - CAM_OFFSET_Z);
+                }
+            }
+            catch { }
+            if (coordFreezeCount >= 60) // 持续约1秒
+            {
+                coordFreezeTimer.Stop();
+                // 优化项1: 句柄长驻, 不在此 CloseHandle
+                // 优化项3: 重置为 Zero, 标记冻结结束, 避免后续 tick 重复写入
+                lockCoordHProcess = IntPtr.Zero;
+            }
+        }
+
         long FollowPointerChain(IntPtr hProcess, long baseAddress, long[] offsets)
         {
             long address = baseAddress;
@@ -3626,12 +5106,32 @@ end
             Color color = Color.Blue;
             Process[] procs = Process.GetProcessesByName("yysls");
             bool gameRunning = procs.Length > 0;
+            // 自动从运行中的进程检测游戏路径
+            if (gameRunning && string.IsNullOrEmpty(gameRootPath))
+            {
+                try
+                {
+                    string exePath = procs[0].MainModule.FileName;
+                    string binDir = Path.GetDirectoryName(exePath);
+                    string rootDir = Path.GetDirectoryName(binDir);
+                    if (File.Exists(Path.Combine(binDir, GameExeName)))
+                    {
+                        gameRootPath = rootDir;
+                        gameBinPath = binDir;
+                        UpdateCommPaths();
+                        AppendLog("自动检测游戏路径: " + gameRootPath);
+                        SaveConfig();
+                    }
+                }
+                catch { }
+            }
             try
             {
-                if (string.IsNullOrEmpty(gameRootPath)) { status = "游戏未运行 - 请先设置目录"; color = Color.Gray; }
-                else if (!gameRunning && !gameLaunched) { status = "游戏未运行 - " + gameRootPath; color = Color.Gray; }
+                if (isReady) { status = "已就绪 - 可以使用 GM 命令"; color = Color.Green; }
+                else if (gameRunning) { status = "游戏运行中 - 点[注入]"; color = Color.Blue; }
                 else if (!gameRunning && gameLaunched) { status = "游戏可能已退出"; color = Color.Red; gameLaunched = false; }
-                else if (isReady) { status = "已就绪 - 可以使用 GM 命令"; color = Color.Green; }
+                else if (!gameRunning && string.IsNullOrEmpty(gameRootPath)) { status = "游戏未运行 - 请先设置目录"; color = Color.Gray; }
+                else if (!gameRunning) { status = "游戏未运行 - " + gameRootPath; color = Color.Gray; }
                 else if (File.Exists(Path.Combine(ToolDir, "core.config"))) { status = "工具文件已就位 - 注入后检查 gm_tool.log"; color = Color.Orange; }
                 else { status = "游戏运行中 - 点[注入]"; color = Color.Blue; }
 
@@ -3727,18 +5227,36 @@ end
 
         void SetButtonsEnabled(Control parent, bool enabled)
         {
+            bool memEnabled = chkEnableMemory.Checked;
             foreach (Control control in parent.Controls)
             {
-                // 初始标签页的按钮始终可点击
+                // 初始标签页的按钮始终可点击（注入按钮除外）
                 if (parent == tabInit || parent == grpGM && control == tabInit) continue;
+                // 内存操作控件受 chkEnableMemory 控制
+                bool isMemControl = (control.Tag as string) == "mem";
+                bool controlEnabled = enabled;
+                if (isMemControl) controlEnabled = memEnabled;
                 Button button = control as Button;
-                if (button != null && (button.Tag as string) != "nav") button.Enabled = enabled;
+                if (button != null && (button.Tag as string) != "nav")
+                    button.Enabled = controlEnabled;
                 CheckBox chk = control as CheckBox;
-                if (chk != null) chk.Enabled = enabled;
+                if (chk != null && chk != chkEnableMemory) chk.Enabled = controlEnabled;
                 ComboBox combo = control as ComboBox;
-                if (combo != null) combo.Enabled = enabled;
+                if (combo != null) combo.Enabled = controlEnabled;
+                TextBox tb = control as TextBox;
+                if (tb != null && !tb.ReadOnly) tb.Enabled = controlEnabled;
+                TrackBar trk = control as TrackBar;
+                if (trk != null) trk.Enabled = controlEnabled;
+                DataGridView dgv = control as DataGridView;
+                if (dgv != null) dgv.Enabled = controlEnabled;
                 if (control.HasChildren) SetButtonsEnabled(control, enabled);
             }
+        }
+
+        void chkEnableMemory_CheckedChanged(object sender, EventArgs e)
+        {
+            // 刷新所有内存控件状态
+            SetGMEnabled(isReady);
         }
 
         void CheckState()
@@ -3816,7 +5334,7 @@ end
 
         void ClearManagedFiles()
         {
-            string[] paths = new string[] { CmdFile, CmdResultFile, ToolResultFile, ToolResultCompatFile, UnifiedLogFile, Path.Combine(ToolDir, "ready.txt"), Path.Combine(ToolDir, "trace.txt"), Path.Combine(ToolDir, "connector_log.txt"), Path.Combine(ToolDir, "gm_tool_ui.log"), Path.Combine(ToolDir, "gm_tool_all.log"), Path.Combine(ToolDir, "gm_signal.txt"), Path.Combine(ToolDir, "svc.cfg") };
+            string[] paths = new string[] { CmdFile, CmdResultFile, ToolResultFile, UnifiedLogFile, Path.Combine(ToolDir, "ready.txt"), Path.Combine(ToolDir, "trace.txt"), Path.Combine(ToolDir, "connector_log.txt"), Path.Combine(ToolDir, "gm_tool_ui.log"), Path.Combine(ToolDir, "gm_tool_all.log"), Path.Combine(ToolDir, "gm_signal.txt"), Path.Combine(ToolDir, "svc.cfg"), Path.Combine(ToolDir, "coord_ptr.txt") };
             foreach (string path in paths)
             {
                 SafeDeleteFile(path, "清理托管文件失败");
@@ -3878,6 +5396,8 @@ end
             try { if (commandResultTimer != null) { commandResultTimer.Stop(); commandResultTimer.Dispose(); commandResultTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose commandResultTimer failed: " + ex.Message); }
             try { if (injectionDiagTimer != null) { injectionDiagTimer.Stop(); injectionDiagTimer.Dispose(); injectionDiagTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose injectionDiagTimer failed: " + ex.Message); }
             try { if (readyPollTimer != null) { readyPollTimer.Stop(); readyPollTimer.Dispose(); readyPollTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose readyPollTimer failed: " + ex.Message); }
+            try { if (coordFreezeTimer != null) { coordFreezeTimer.Stop(); coordFreezeTimer.Dispose(); coordFreezeTimer = null; } } catch (Exception ex) { Debug.WriteLine("Dispose coordFreezeTimer failed: " + ex.Message); }
+            try { if (persistentCoordHProcess != IntPtr.Zero) { CloseHandle(persistentCoordHProcess); persistentCoordHProcess = IntPtr.Zero; persistentCoordPid = 0; } } catch (Exception ex) { Debug.WriteLine("Dispose persistentCoordHProcess failed: " + ex.Message); }
             try { ClearManagedFiles(); } catch (Exception ex) { Debug.WriteLine("OnFormClosing ClearManagedFiles failed: " + ex.Message); }
             try { if (mmfAccessor != null) mmfAccessor.Dispose(); } catch (Exception ex) { Debug.WriteLine("Dispose mmfAccessor failed: " + ex.Message); }
             try { if (mmf != null) mmf.Dispose(); } catch (Exception ex) { Debug.WriteLine("Dispose mmf failed: " + ex.Message); }
