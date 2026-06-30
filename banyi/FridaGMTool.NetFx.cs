@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
@@ -249,6 +249,18 @@ namespace FridaGMTool
         [DllImport("user32.dll", SetLastError = true)]
         static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
         delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr SetFocus(IntPtr hWnd);
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
         const uint INPUT_KEYBOARD = 1;
         const uint KEYEVENTF_KEYUP = 0x0002;
@@ -271,6 +283,7 @@ namespace FridaGMTool
         const ushort VK_LEFT = 0x25;
         const ushort VK_RIGHT = 0x27;
         const ushort VK_MENU = 0x12;         // Alt
+        const ushort VK_F11 = 0x7A;
 
         [DllImport("user32.dll", SetLastError = true)]
         static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
@@ -281,11 +294,15 @@ namespace FridaGMTool
         delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
 
         IntPtr nudgeKbHook = IntPtr.Zero;
-        bool flyModeEnabled = false;     // 飞天遁地: 小键盘上下瞬移
-        bool nudgeModeEnabled = false;   // 瞬移: Alt+方向键东南西北瞬移
+        // 必须用字段保持委托引用, 否则 GC 回收临时委托实例后, 钩子回调时崩溃
+        LowLevelKeyboardProc nudgeKbProcDelegate;
+        volatile bool flyModeEnabled = false;     // 飞天遁地: 方向键上下瞬移 (钩子线程读, 需 volatile)
+        volatile bool nudgeModeEnabled = false;   // 瞬移: Alt+方向键东南西北瞬移 (钩子线程读, 需 volatile)
         // 防止按键长按连续触发 (一次按下只传送一次, 抬起后才能再次触发)
-        bool flyKeyUp = true, flyKeyDown = true;
-        bool nudgeKeyLeft = true, nudgeKeyRight = true, nudgeKeyUp = true, nudgeKeyDown = true;
+        volatile bool flyKeyUp = true, flyKeyDown = true;
+        volatile bool nudgeKeyLeft = true, nudgeKeyRight = true, nudgeKeyUp = true, nudgeKeyDown = true;
+        // 坐标列表热键去抖 (F11传送选中 / ←上一条 / →下一条)
+        volatile bool hotkeyF11Up = true, hotkeyLeftUp = true, hotkeyRightUp = true;
 
         [StructLayout(LayoutKind.Sequential)]
         struct INPUT
@@ -361,6 +378,9 @@ namespace FridaGMTool
         Label lblLiveCoord;  // 实时坐标显示 (替代原 X/Y/Z 输入框, 实时刷新)
         System.Windows.Forms.Timer liveCoordTimer;  // 实时坐标刷新定时器
         CheckBox chkEnableMemory;
+        CheckBox chkFlyMode, chkNudgeMode;  // 微调模式复选框 (飞天遁地/瞬移)
+        // chkEnableMemory.Checked 的线程安全缓存: 微调传送在 Task.Run 线程池跑, 直接读 WinForms 控件属性是 UB
+        volatile bool memoryEnabledCache = false;
         Label lblNotice;
         System.Windows.Forms.Timer readyPollTimer;
         System.Windows.Forms.Timer injectionDiagTimer;
@@ -732,130 +752,140 @@ namespace FridaGMTool
         public GMForm()
         {
             Text = "FridaGM 工具 v" + CurrentVersionText;
-            Size = new Size(560, 720);
+            Size = new Size(514, 530);
             FormBorderStyle = FormBorderStyle.FixedDialog;
+            TopMost = true;  // 默认置顶
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
 
             int y = 4;
 
             // === GM 命令 ===
-            grpGM = new Panel { Location = new Point(8, y), Size = new Size(536, 674), BackColor = Color.White };
-            const int rowStep = 34;
-            const int sectionGap = 8;
-            chkGod = new CheckBox { Text = "无敌", Size = new Size(118, 28) };
+            grpGM = new Panel { Location = new Point(4, y), Size = new Size(498, 480), BackColor = Color.White };
+            const int rowStep = 30;
+            const int sectionGap = 4;
+            chkGod = new CheckBox { Text = "无敌", Size = new Size(110, 26) };
             chkGod.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkGod.Text, BuildCombatExperimentLua(chkGod.Checked ? "god" : "god_off")); };
-            btnStamina = new Button { Text = "锁体力消耗", Size = new Size(118, 28) };
-            btnStamina.Click += (s, e) => SendExperimentCommand("锁体力消耗", BuildCombatExperimentLua("stamina_lock"));
-            btnStaminaDive = new Button { Text = "无限潜水资源", Size = new Size(118, 28) };
-            btnStaminaDive.Click += (s, e) => SendExperimentCommand("无限潜水资源", BuildCombatExperimentLua("stamina_dive"));
-            chkInvis = new CheckBox { Text = "隐身", Size = new Size(118, 28) };
+            btnStamina = new Button { Text = "无限体力", Size = new Size(110, 26) };
+            btnStamina.Click += (s, e) => SendExperimentCommand("无限体力", BuildCombatExperimentLua("stamina_lock"));
+            btnStaminaDive = new Button { Text = "无限潜水", Size = new Size(110, 26) };
+            btnStaminaDive.Click += (s, e) => SendExperimentCommand("无限潜水", BuildCombatExperimentLua("stamina_dive"));
+            chkInvis = new CheckBox { Text = "隐身", Size = new Size(110, 26) };
             chkInvis.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkInvis.Text, BuildCombatExperimentLua(chkInvis.Checked ? "invis" : "invis_off")); };
 
-            btnStaminaEmpty = new Button { Text = "清空战斗资源", Size = new Size(118, 28) };
-            btnStaminaEmpty.Click += (s, e) => SendExperimentCommand("清空战斗资源", BuildCombatExperimentLua("stamina_empty"));
-            btnStaminaResetAll = new Button { Text = "恢复体力设置", Size = new Size(118, 28) };
-            btnStaminaResetAll.Click += (s, e) => SendExperimentCommand("恢复体力设置", BuildCombatExperimentLua("stamina_reset_all"));
+            btnStaminaEmpty = new Button { Text = "清空战斗", Size = new Size(110, 26) };
+            btnStaminaEmpty.Click += (s, e) => SendExperimentCommand("清空战斗", BuildCombatExperimentLua("stamina_empty"));
+            btnStaminaResetAll = new Button { Text = "恢复体力", Size = new Size(110, 26) };
+            btnStaminaResetAll.Click += (s, e) => SendExperimentCommand("恢复体力", BuildCombatExperimentLua("stamina_reset_all"));
 
-            chkNpcDumb = new CheckBox { Text = "NPC变笨", Size = new Size(118, 28) };
+            chkNpcDumb = new CheckBox { Text = "NPC变笨", Size = new Size(110, 26) };
             chkNpcDumb.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkNpcDumb.Text, BuildYyLaoLiuLua(chkNpcDumb.Checked ? "yy_npcdumb" : "yy_npcdumb_off")); };
-            chkSuperDodge = new CheckBox { Text = "超级闪避", Size = new Size(118, 28) };
+            chkSuperDodge = new CheckBox { Text = "超级闪避", Size = new Size(110, 26) };
             chkSuperDodge.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) SendExperimentCommand(chkSuperDodge.Text, BuildCombatExperimentLua(chkSuperDodge.Checked ? "super_dodge" : "super_dodge_off")); };
 
-            btnAtkBuff = new Button { Text = "攻击Buff", Size = new Size(118, 28) };
+            btnAtkBuff = new Button { Text = "攻击Buff", Size = new Size(110, 26) };
             btnAtkBuff.Click += (s, e) => SendExperimentCommand("攻击Buff整合", BuildCombatExperimentLua("atkbuff_combo"));
-            btnDefBuff = new Button { Text = "防御Buff", Size = new Size(118, 28) };
+            btnDefBuff = new Button { Text = "防御Buff", Size = new Size(110, 26) };
             btnDefBuff.Click += (s, e) => SendExperimentCommand("防御Buff", BuildCombatExperimentLua("defbuff"));
-            btnMinBuff = new Button { Text = "最小Buff", Size = new Size(118, 28), BackColor = Color.LightGreen };
+            btnMinBuff = new Button { Text = "最小Buff", Size = new Size(110, 26), BackColor = Color.LightGreen };
             btnMinBuff.Click += (s, e) => SendExperimentCommand("最小Buff", BuildLoopFeatureLua("minimal_buff"));
 
-            btnGatherBuff = new Button { Text = "采集Buff", Size = new Size(118, 28) };
+            btnGatherBuff = new Button { Text = "采集Buff", Size = new Size(110, 26) };
             btnGatherBuff.Click += (s, e) => SendExperimentCommand("采集Buff", BuildLoopFeatureLua("gather_buff"));
 
-            btnAuxBuff = new Button { Text = "辅助Buff", Size = new Size(118, 28) };
+            btnAuxBuff = new Button { Text = "辅助Buff", Size = new Size(110, 26) };
             btnAuxBuff.Click += (s, e) => SendExperimentCommand("辅助Buff", BuildLoopFeatureLua("aux_buff"));
-            btnUnknownBuff = new Button { Text = "未知Buff", Size = new Size(118, 28) };
+            btnUnknownBuff = new Button { Text = "未知Buff", Size = new Size(110, 26) };
             btnUnknownBuff.Click += (s, e) => SendExperimentCommand("未知Buff", BuildLoopFeatureLua("unknown_buff"));
-            var btnRemoveAllBuffs = new Button { Text = "移除全部Buff", Size = new Size(118, 28) };
+            var btnRemoveAllBuffs = new Button { Text = "移除全部Buff", Size = new Size(110, 26) };
             btnRemoveAllBuffs.Click += (s, e) => SendExperimentCommand("移除全部Buff", BuildLoopFeatureLua("remove_all_buffs"));
-            btnStealthFlags = new Button { Text = "关闭安全标志", Size = new Size(118, 28) };
-            btnStealthFlags.Click += (s, e) => SendExperimentCommand("关闭安全标志", BuildLoopFeatureLua("stealth_flags"));
-            var btnYyRemoveBuff = new Button { Text = "备用移除Buff", Size = new Size(118, 28) };
+            btnStealthFlags = new Button { Text = "关闭标志", Size = new Size(110, 26) };
+            btnStealthFlags.Click += (s, e) => SendExperimentCommand("关闭标志", BuildLoopFeatureLua("stealth_flags"));
+            var btnYyRemoveBuff = new Button { Text = "备用移除Buff", Size = new Size(110, 26) };
             btnYyRemoveBuff.Click += (s, e) => SendExperimentCommand("备用移除Buff", BuildYyLaoLiuBuffToolLua("yy_remove_buffs"));
 
-            btnLoopBuff = new Button { Text = "循环强力Buff", Size = new Size(118, 28) };
-            btnLoopBuff.Click += (s, e) => SendExperimentCommand("循环强力Buff", BuildLoopFeatureLua("loop_buff"));
-            btnLoopDefense = new Button { Text = "循环防御Buff", Size = new Size(118, 28) };
-            btnLoopDefense.Click += (s, e) => SendExperimentCommand("循环防御Buff", BuildLoopFeatureLua("loop_defense"));
-            btnLoopLoot = new Button { Text = "循环自动拾取", Size = new Size(118, 28), BackColor = Color.FromArgb(255, 200, 200) };
-            btnLoopLoot.Click += (s, e) => SendExperimentCommand("循环自动拾取", BuildLoopFeatureLua("loop_loot"));
-            btnLoopRecover = new Button { Text = "循环自动恢复", Size = new Size(118, 28) };
-            btnLoopRecover.Click += (s, e) => SendExperimentCommand("循环自动恢复", BuildLoopFeatureLua("loop_recover"));
+            btnLoopBuff = new Button { Text = "强力Buff", Size = new Size(110, 26) };
+            btnLoopBuff.Click += (s, e) => SendExperimentCommand("强力Buff", BuildLoopFeatureLua("loop_buff"));
+            btnLoopDefense = new Button { Text = "防御Buff", Size = new Size(110, 26) };
+            btnLoopDefense.Click += (s, e) => SendExperimentCommand("防御Buff", BuildLoopFeatureLua("loop_defense"));
+            btnLoopLoot = new Button { Text = "自动拾取", Size = new Size(110, 26), BackColor = Color.FromArgb(255, 200, 200) };
+            btnLoopLoot.Click += (s, e) => SendExperimentCommand("自动拾取", BuildLoopFeatureLua("loop_loot"));
+            btnLoopRecover = new Button { Text = "自动恢复", Size = new Size(110, 26) };
+            btnLoopRecover.Click += (s, e) => SendExperimentCommand("自动恢复", BuildLoopFeatureLua("loop_recover"));
 
-            btnYyAutoLoot = new Button { Text = "自动拾取", Size = new Size(118, 28) };
+            btnYyAutoLoot = new Button { Text = "自动拾取", Size = new Size(110, 26) };
             btnYyAutoLoot.Click += (s, e) => SendExperimentCommand("自动拾取", BuildLoopFeatureLua("loot_once"));
-            btnYyRecover = new Button { Text = "一键恢复", Size = new Size(118, 28) };
+            btnYyRecover = new Button { Text = "一键恢复", Size = new Size(110, 26) };
             btnYyRecover.Click += (s, e) => SendExperimentCommand("一键恢复", BuildYyLaoLiuLua("yy_recover"));
 
-            btnRhythmGame = new Button { Text = "NPC节奏游戏", Size = new Size(118, 28) };
-            btnRhythmGame.Click += (s, e) => SendExperimentCommand("NPC节奏游戏", BuildGameFeatureLua("rhythm_game"));
-            btnChessWin = new Button { Text = "象棋秒赢", Size = new Size(118, 28) };
+            btnRhythmGame = new Button { Text = "节奏游戏", Size = new Size(110, 26) };
+            btnRhythmGame.Click += (s, e) => SendExperimentCommand("节奏游戏", BuildGameFeatureLua("rhythm_game"));
+            btnChessWin = new Button { Text = "象棋秒赢", Size = new Size(110, 26) };
             btnChessWin.Click += (s, e) => SendExperimentCommand("象棋秒赢", BuildGameFeatureLua("chess_win"));
-            btnPitchPot = new Button { Text = "投壶圈变大", Size = new Size(118, 28) };
+            btnPitchPot = new Button { Text = "投壶圈变大", Size = new Size(110, 26) };
             btnPitchPot.Click += (s, e) => SendExperimentCommand("投壶圈变大", BuildGameFeatureLua("pitch_pot_easy"));
 
-            chkOneHit = new CheckBox { Text = "一击必杀", Size = new Size(118, 28) };
+            chkOneHit = new CheckBox { Text = "一击必杀", Size = new Size(110, 26) };
             chkOneHit.CheckedChanged += (s, e) => { if (!suppressCheckboxEvents) { if (chkOneHit.Checked) SendExperimentCommand("一击必杀", BuildCombatExperimentLua("onehit")); else SendExperimentCommand("还原一击必杀", BuildLoopFeatureLua("onehit_off")); } };
 
             cmbAtkMul = new ComboBox { Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
             cmbAtkMul.Items.AddRange(new object[] { "x2", "x4", "x8" });
             cmbAtkMul.SelectedIndex = 0;
-            btnApplyAtkMul = new Button { Text = "应用倍率", Size = new Size(100, 28) };
+            btnApplyAtkMul = new Button { Text = "应用倍率", Size = new Size(92, 26) };
             btnApplyAtkMul.Click += (s, e) => ApplyAttackMultiplierSelection();
-            btnResetAtkMul = new Button { Text = "还原倍率", Size = new Size(100, 28) };
+            btnResetAtkMul = new Button { Text = "还原倍率", Size = new Size(92, 26) };
             btnResetAtkMul.Click += (s, e) => SendExperimentCommand("还原攻击倍率", BuildCombatExperimentLua("atk_mul_reset"));
 
             txtDialogSpeed = new TextBox { Size = new Size(120, 24), Text = "80" };
-            btnApplyDialogSpeed = new Button { Text = "应用速度", Size = new Size(100, 28) };
+            btnApplyDialogSpeed = new Button { Text = "应用速度", Size = new Size(92, 26) };
             btnApplyDialogSpeed.Click += (s, e) => ApplyDialogSpeedSelection();
-            btnResetDialogSpeed = new Button { Text = "还原速度", Size = new Size(100, 28) };
+            btnResetDialogSpeed = new Button { Text = "还原速度", Size = new Size(92, 26) };
             btnResetDialogSpeed.Click += (s, e) => SendExperimentCommand("还原速度", BuildLoopFeatureLua("dialog_speed_reset"));
 
             cmbAtkSpeed = new ComboBox { Size = new Size(120, 24), DropDownStyle = ComboBoxStyle.DropDownList };
             cmbAtkSpeed.Items.AddRange(new object[] { "x1.5", "x3", "x5", "x7.5", "x10", "x30" });
             cmbAtkSpeed.SelectedIndex = 0;
-            btnApplyAtkSpeed = new Button { Text = "应用速度", Size = new Size(100, 28) };
+            btnApplyAtkSpeed = new Button { Text = "应用速度", Size = new Size(92, 26) };
             btnApplyAtkSpeed.Click += (s, e) => ApplyAtkSpeedSelection();
-            btnResetAtkSpeed = new Button { Text = "还原攻击速度", Size = new Size(100, 28) };
-            btnResetAtkSpeed.Click += (s, e) => SendExperimentCommand("还原攻击速度", BuildCombatExperimentLua("atk_speed_reset"));
-            grpGM.Size = new Size(536, 540);
-            tabGM = new Panel { Location = new Point(6, 6), Size = new Size(524, 528), BackColor = Color.White };
-            var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(524, 42), BackColor = Color.White };
-            var btnTabInit = new Button { Text = "快速启动", Location = new Point(0, 6), Size = new Size(100, 28), Tag = "nav" };
-            var btnTabBattle = new Button { Text = "功能", Location = new Point(105, 6), Size = new Size(100, 28), Tag = "nav" };
-            var btnTabBuff = new Button { Text = "Buff", Location = new Point(210, 6), Size = new Size(100, 28), Tag = "nav" };
-            var btnTabTools = new Button { Text = "工具", Location = new Point(315, 6), Size = new Size(100, 28), Tag = "nav" };
-            var btnTabCoord = new Button { Text = "传送", Location = new Point(420, 6), Size = new Size(100, 28), Tag = "nav" };
+            btnResetAtkSpeed = new Button { Text = "还原速度", Size = new Size(92, 26) };
+            btnResetAtkSpeed.Click += (s, e) => SendExperimentCommand("还原速度", BuildCombatExperimentLua("atk_speed_reset"));
+            grpGM.Size = new Size(498, 480);
+            tabGM = new Panel { Location = new Point(4, 6), Size = new Size(490, 468), BackColor = Color.White };
+            var tabNav = new Panel { Location = new Point(0, 0), Size = new Size(490, 42), BackColor = Color.White };
+            var btnTabInit = new Button { Text = "启动", Location = new Point(0, 6), Size = new Size(95, 28), Tag = "nav" };
+            var btnTabBattle = new Button { Text = "功能", Location = new Point(99, 6), Size = new Size(95, 28), Tag = "nav" };
+            var btnTabCoord = new Button { Text = "传送", Location = new Point(198, 6), Size = new Size(95, 28), Tag = "nav" };
+            var btnTabTest = new Button { Text = "测试", Location = new Point(297, 6), Size = new Size(95, 28), Tag = "nav" };
+            // 置顶按钮: 放在标签栏最后面, 默认置顶时绿色框 + "置" 字
+            var btnPin = new Button { Text = "置", Location = new Point(454, 6), Size = new Size(32, 28), FlatStyle = FlatStyle.Flat, Tag = "nav" };
+            btnPin.BackColor = TopMost ? Color.LightGreen : Color.FromArgb(248, 250, 252);
+            btnPin.ForeColor = TopMost ? Color.FromArgb(22, 101, 52) : Color.FromArgb(120, 120, 120);
+            btnPin.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+            btnPin.FlatAppearance.BorderColor = TopMost ? Color.FromArgb(34, 139, 34) : Color.FromArgb(226, 232, 240);
+            btnPin.Click += (s, e) => {
+                TopMost = !TopMost;
+                btnPin.BackColor = TopMost ? Color.LightGreen : Color.FromArgb(248, 250, 252);
+                btnPin.ForeColor = TopMost ? Color.FromArgb(22, 101, 52) : Color.FromArgb(120, 120, 120);
+                btnPin.FlatAppearance.BorderColor = TopMost ? Color.FromArgb(34, 139, 34) : Color.FromArgb(226, 232, 240);
+            };
             tabNav.Controls.Add(btnTabInit);
             tabNav.Controls.Add(btnTabBattle);
-            tabNav.Controls.Add(btnTabBuff);
-            tabNav.Controls.Add(btnTabTools);
             tabNav.Controls.Add(btnTabCoord);
+            tabNav.Controls.Add(btnTabTest);
+            tabNav.Controls.Add(btnPin);
             tabGM.Controls.Add(tabNav);
 
-            tabInit = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
-            var tabBattle = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
-            var tabBuff = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
-            var tabTools = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
-            var tabCoord = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(524, 486), BackColor = Color.White };
+            tabInit = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(490, 426), BackColor = Color.White };
+            var tabBattle = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(490, 426), BackColor = Color.White };
+            var tabCoord = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(490, 426), BackColor = Color.White };
+            var tabTest = new ThinScrollPanel { Location = new Point(0, 42), Size = new Size(490, 426), BackColor = Color.White };
             tabGM.Controls.Add(tabInit);
             tabGM.Controls.Add(tabBattle);
-            tabGM.Controls.Add(tabBuff);
-            tabGM.Controls.Add(tabTools);
             tabGM.Controls.Add(tabCoord);
+            tabGM.Controls.Add(tabTest);
 
-            Button[] tabButtons = new Button[] { btnTabInit, btnTabBattle, btnTabBuff, btnTabTools, btnTabCoord };
-            Panel[] tabPages = new Panel[] { tabInit, tabBattle, tabBuff, tabTools, tabCoord };
+            Button[] tabButtons = new Button[] { btnTabInit, btnTabBattle, btnTabCoord, btnTabTest };
+            Panel[] tabPages = new Panel[] { tabInit, tabBattle, tabCoord, tabTest };
             Action<Button, bool> styleNavButton = (button, active) => {
                 button.FlatStyle = FlatStyle.Flat;
                 button.UseVisualStyleBackColor = false;
@@ -877,67 +907,48 @@ namespace FridaGMTool
             };
             btnTabInit.Click += (s, e) => activateTab(tabInit, btnTabInit);
             btnTabBattle.Click += (s, e) => activateTab(tabBattle, btnTabBattle);
-            btnTabBuff.Click += (s, e) => activateTab(tabBuff, btnTabBuff);
-            btnTabTools.Click += (s, e) => activateTab(tabTools, btnTabTools);
             btnTabCoord.Click += (s, e) => activateTab(tabCoord, btnTabCoord);
+            btnTabTest.Click += (s, e) => activateTab(tabTest, btnTabTest);
 
             // ── 初始 tab content ──
             int[] yInit = new int[] { 4 };
-            Func<int, int, Point> posInit = (col, yy) => new Point(12 + col * 124, yy);
-            tabInit.Controls.Add(new Label { Text = "── 启动 ──", Location = new Point(12, yInit[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
-            yInit[0] += 18;
-            btnBrowse = new Button { Text = "选择游戏目录", Size = new Size(118, 28) };
-            btnBrowse.Click += BtnBrowse_Click;
-            btnStartGame = new Button { Text = "启动游戏", Size = new Size(118, 28) };
-            btnStartGame.Click += BtnStartGame_Click;
-            btnInject = new Button { Text = "注入工具", Size = new Size(118, 28) };
+            Func<int, int, Point> posInit = (col, yy) => new Point(6 + col * 120, yy);
+            btnInject = new Button { Text = "注入工具", Size = new Size(110, 26) };
             btnInject.Click += BtnInject_Click_B;
-            var btnTopMost = new Button { Text = "窗口置顶", Size = new Size(118, 28) };
-            btnTopMost.Click += (s, e) => { TopMost = !TopMost; btnTopMost.BackColor = TopMost ? Color.LightGreen : Color.White; btnTopMost.Text = TopMost ? "取消置顶" : "窗口置顶"; };
-            btnRefresh = new Button { Text = "刷新状态", Size = new Size(118, 28) };
-            btnRefresh.Click += (s, e) => CheckState();
-            var btnOpenDir = new Button { Text = "打开工具目录", Size = new Size(118, 28) };
+            var btnOpenDir = new Button { Text = "工具目录", Size = new Size(110, 26) };
             btnOpenDir.Click += (s, e) => { try { System.Diagnostics.Process.Start("explorer.exe", ToolDir); } catch (Exception ex) { AppendLog("打开目录失败: " + ex.Message); } };
-            var btnOpenLog = new Button { Text = "打开日志", Size = new Size(118, 28) };
+            var btnOpenLog = new Button { Text = "打开日志", Size = new Size(110, 26) };
             btnOpenLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) System.Diagnostics.Process.Start(UnifiedLogFile); else MessageBox.Show("日志文件不存在"); } catch (Exception ex) { MessageBox.Show("打开失败: " + ex.Message); } };
-            var btnClearLog = new Button { Text = "清除日志", Size = new Size(118, 28) };
+            var btnClearLog = new Button { Text = "清除日志", Size = new Size(110, 26) };
             btnClearLog.Click += (s, e) => { try { if (File.Exists(UnifiedLogFile)) File.WriteAllText(UnifiedLogFile, ""); AppendLog("日志已清除"); } catch (Exception ex) { AppendLog("清除日志失败: " + ex.Message); } };
-            tabInit.Controls.Add(btnStartGame); btnStartGame.Location = posInit(0, yInit[0]);
-            tabInit.Controls.Add(btnInject); btnInject.Location = posInit(1, yInit[0]);
-            tabInit.Controls.Add(btnTopMost); btnTopMost.Location = posInit(2, yInit[0]);
-            tabInit.Controls.Add(btnRefresh); btnRefresh.Location = posInit(3, yInit[0]);
-            yInit[0] += rowStep;
-            tabInit.Controls.Add(btnBrowse); btnBrowse.Location = posInit(0, yInit[0]);
+            tabInit.Controls.Add(btnInject); btnInject.Location = posInit(0, yInit[0]);
             tabInit.Controls.Add(btnOpenDir); btnOpenDir.Location = posInit(1, yInit[0]);
             tabInit.Controls.Add(btnOpenLog); btnOpenLog.Location = posInit(2, yInit[0]);
             tabInit.Controls.Add(btnClearLog); btnClearLog.Location = posInit(3, yInit[0]);
-            yInit[0] += rowStep + 6;
-            lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(492, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) };
+            yInit[0] += 30;
+            lblStatus = new Label { Text = "状态: 未初始化", Location = posInit(0, yInit[0]), Size = new Size(478, 18), ForeColor = Color.Gray, Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold) };
             tabInit.Controls.Add(lblStatus);
             yInit[0] += 22;
-            Button btnInitCoordHook = new Button { Text = "初始化内存", Location = new Point(12, yInit[0]), Size = new Size(130, 26), Tag = "init" };
+            Button btnInitCoordHook = new Button { Text = "初始化内存", Location = new Point(6, yInit[0]), Size = new Size(120, 24), Tag = "init" };
             btnInitCoordHook.Click += (s, ev) => InitCoordHook();
             tabInit.Controls.Add(btnInitCoordHook);
-            yInit[0] += 30;
-            chkEnableMemory = new CheckBox { Text = "启用内存功能", Location = new Point(12, yInit[0]), Size = new Size(130, 22), ForeColor = Color.FromArgb(192, 0, 0), Checked = false };
+            chkEnableMemory = new CheckBox { Text = "启用内存功能", Location = new Point(144, yInit[0] + 2), Size = new Size(130, 22), ForeColor = Color.FromArgb(192, 0, 0), Checked = false };
             chkEnableMemory.CheckedChanged += chkEnableMemory_CheckedChanged;
             tabInit.Controls.Add(chkEnableMemory);
-            yInit[0] += 26;
-            tabInit.Controls.Add(new Label { Text = "── 公告 ──", Location = new Point(12, yInit[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+            yInit[0] += 30;
+            tabInit.Controls.Add(new Label { Text = "── 公告 ──", Location = new Point(6, yInit[0]), Size = new Size(478, 14), ForeColor = Color.FromArgb(120, 120, 120), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
             yInit[0] += 18;
-            var noticePanel = new Panel { Location = new Point(12, yInit[0]), Size = new Size(492, 76), BackColor = Color.FromArgb(248, 250, 252) };
-            lblNotice = new Label { Text = BuildAnnouncementText(StartupManifest), Location = new Point(12, 10), Size = new Size(468, 56), ForeColor = Color.FromArgb(71, 85, 105), Font = new Font("Microsoft YaHei UI", 9F) };
+            var noticePanel = new Panel { Location = new Point(6, yInit[0]), Size = new Size(478, 76), BackColor = Color.FromArgb(248, 250, 252) };
+            lblNotice = new Label { Text = BuildAnnouncementText(StartupManifest), Location = new Point(6, 10), Size = new Size(466, 56), ForeColor = Color.FromArgb(71, 85, 105), Font = new Font("Microsoft YaHei UI", 9F) };
             noticePanel.Controls.Add(lblNotice);
             tabInit.Controls.Add(noticePanel);
 
             int[] yBattle = new int[] { 4 };
-            int[] yBuff = new int[] { 4 };
-            int[] yTools = new int[] { 4 };
             int[] yCoord = new int[] { 4 };
-            Func<int, int, Point> pos = (col, yy) => new Point(12 + col * 124, yy);
+            Func<int, int, Point> pos = (col, yy) => new Point(6 + col * 120, yy);
             Action<Control, string, int[]> addTabSection = (parent, title, yref) => {
                 if (parent.Controls.Count > 0) yref[0] += rowStep + sectionGap;
-                parent.Controls.Add(new Label { Text = "── " + title + " ──", Location = new Point(12, yref[0]), Size = new Size(500, 14), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
+                parent.Controls.Add(new Label { Text = "── " + title + " ──", Location = new Point(6, yref[0]), Size = new Size(478, 14), ForeColor = Color.FromArgb(80, 80, 80), Font = new Font("Microsoft YaHei", 7, FontStyle.Bold) });
                 yref[0] += 18;
             };
             Action<Control, Control, int, int[]> place = (parent, control, col, yref) => {
@@ -960,69 +971,70 @@ namespace FridaGMTool
             place(tabBattle, btnChessWin, 3, yBattle);
             yBattle[0] += rowStep;
             place(tabBattle, btnPitchPot, 0, yBattle);
-            btnCutsceneKill = new Button { Text = "终止过场动画", Size = new Size(118, 28) };
-            btnCutsceneKill.Click += (s, e) => SendExperimentCommand("终止过场动画", BuildCombatExperimentLua("cutscene_kill"));
+            btnCutsceneKill = new Button { Text = "终止动画", Size = new Size(110, 26) };
+            btnCutsceneKill.Click += (s, e) => SendExperimentCommand("终止动画", BuildCombatExperimentLua("cutscene_kill"));
             place(tabBattle, btnCutsceneKill, 1, yBattle);
             place(tabBattle, btnStealthFlags, 2, yBattle);
             place(tabBattle, btnAuxBuff, 3, yBattle);
 
+            addTabSection(tabBattle, "Buff 施加", yBattle);
+            place(tabBattle, btnAtkBuff, 0, yBattle);
+            place(tabBattle, btnDefBuff, 1, yBattle);
+            place(tabBattle, btnMinBuff, 2, yBattle);
+            place(tabBattle, btnGatherBuff, 3, yBattle);
+            yBattle[0] += rowStep;
+            place(tabBattle, btnUnknownBuff, 0, yBattle);
+            place(tabBattle, btnRemoveAllBuffs, 1, yBattle);
+            place(tabBattle, btnYyRemoveBuff, 2, yBattle);
+
+            addTabSection(tabBattle, "循环功能 (再点停止)", yBattle);
+            place(tabBattle, btnLoopBuff, 0, yBattle);
+            place(tabBattle, btnLoopDefense, 1, yBattle);
+            place(tabBattle, btnLoopLoot, 2, yBattle);
+            place(tabBattle, btnLoopRecover, 3, yBattle);
+
             addTabSection(tabBattle, "剧情速度", yBattle);
-            tabBattle.Controls.Add(new Label { Text = "倍率", Location = new Point(12, yBattle[0] + 6), Size = new Size(40, 20) });
-            txtDialogSpeed.Location = new Point(74, yBattle[0] + 3);
+            tabBattle.Controls.Add(new Label { Text = "倍率", Location = new Point(6, yBattle[0] + 6), Size = new Size(40, 20) });
+            txtDialogSpeed.Location = new Point(68, yBattle[0] + 3);
             tabBattle.Controls.Add(txtDialogSpeed);
-            btnApplyDialogSpeed.Location = new Point(206, yBattle[0]);
+            btnApplyDialogSpeed.Location = new Point(200, yBattle[0]);
             tabBattle.Controls.Add(btnApplyDialogSpeed);
-            btnResetDialogSpeed.Location = new Point(316, yBattle[0]);
+            btnResetDialogSpeed.Location = new Point(310, yBattle[0]);
             tabBattle.Controls.Add(btnResetDialogSpeed);
 
-            addTabSection(tabBuff, "Buff 施加", yBuff);
-            place(tabBuff, btnAtkBuff, 0, yBuff);
-            place(tabBuff, btnDefBuff, 1, yBuff);
-            place(tabBuff, btnMinBuff, 2, yBuff);
-            place(tabBuff, btnGatherBuff, 3, yBuff);
-            yBuff[0] += rowStep;
-            place(tabBuff, btnUnknownBuff, 0, yBuff);
-            place(tabBuff, btnRemoveAllBuffs, 1, yBuff);
-            place(tabBuff, btnYyRemoveBuff, 2, yBuff);
+            int[] yTest = new int[] { 4 };
+            addTabSection(tabTest, "资源控制", yTest);
+            place(tabTest, btnStamina, 0, yTest);
+            place(tabTest, btnStaminaDive, 1, yTest);
+            place(tabTest, btnStaminaEmpty, 2, yTest);
+            place(tabTest, btnStaminaResetAll, 3, yTest);
 
-            addTabSection(tabBuff, "循环功能 (再点停止)", yBuff);
-            place(tabBuff, btnLoopBuff, 0, yBuff);
-            place(tabBuff, btnLoopDefense, 1, yBuff);
-            place(tabBuff, btnLoopLoot, 2, yBuff);
-            place(tabBuff, btnLoopRecover, 3, yBuff);
+            addTabSection(tabTest, "速度 / 倍率", yTest);
+            tabTest.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(6, yTest[0] + 6), Size = new Size(80, 20) });
+            cmbAtkMul.Location = new Point(90, yTest[0] + 3);
+            tabTest.Controls.Add(cmbAtkMul);
+            btnApplyAtkMul.Location = new Point(218, yTest[0]);
+            tabTest.Controls.Add(btnApplyAtkMul);
+            btnResetAtkMul.Location = new Point(328, yTest[0]);
+            tabTest.Controls.Add(btnResetAtkMul);
 
-            addTabSection(tabTools, "资源控制", yTools);
-            place(tabTools, btnStamina, 0, yTools);
-            place(tabTools, btnStaminaDive, 1, yTools);
-            place(tabTools, btnStaminaEmpty, 2, yTools);
-            place(tabTools, btnStaminaResetAll, 3, yTools);
-
-            addTabSection(tabTools, "速度 / 倍率", yTools);
-            tabTools.Controls.Add(new Label { Text = "攻击倍率", Location = new Point(12, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbAtkMul.Location = new Point(96, yTools[0] + 3);
-            tabTools.Controls.Add(cmbAtkMul);
-            btnApplyAtkMul.Location = new Point(224, yTools[0]);
-            tabTools.Controls.Add(btnApplyAtkMul);
-            btnResetAtkMul.Location = new Point(334, yTools[0]);
-            tabTools.Controls.Add(btnResetAtkMul);
-
-            yTools[0] += rowStep;
-            tabTools.Controls.Add(new Label { Text = "攻击速度", Location = new Point(12, yTools[0] + 6), Size = new Size(80, 20) });
-            cmbAtkSpeed.Location = new Point(96, yTools[0] + 3);
-            tabTools.Controls.Add(cmbAtkSpeed);
-            btnApplyAtkSpeed.Location = new Point(224, yTools[0]);
-            tabTools.Controls.Add(btnApplyAtkSpeed);
-            btnResetAtkSpeed.Location = new Point(334, yTools[0]);
-            tabTools.Controls.Add(btnResetAtkSpeed);
+            yTest[0] += rowStep;
+            tabTest.Controls.Add(new Label { Text = "攻击速度", Location = new Point(6, yTest[0] + 6), Size = new Size(80, 20) });
+            cmbAtkSpeed.Location = new Point(90, yTest[0] + 3);
+            tabTest.Controls.Add(cmbAtkSpeed);
+            btnApplyAtkSpeed.Location = new Point(218, yTest[0]);
+            tabTest.Controls.Add(btnApplyAtkSpeed);
+            btnResetAtkSpeed.Location = new Point(328, yTest[0]);
+            tabTest.Controls.Add(btnResetAtkSpeed);
 
             addTabSection(tabCoord, "坐标管理", yCoord);
 
             dgvCoords = new DataGridView {
-                Location = new Point(12, yCoord[0]),
+                Location = new Point(6, yCoord[0]),
                 Size = new Size(360, 330),
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = true,
-                ReadOnly = false,
+                ReadOnly = true,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect = false,
                 RowHeadersVisible = false,
@@ -1038,6 +1050,7 @@ namespace FridaGMTool
             dgvCoords.Columns.Add("colY", "Y");
             dgvCoords.Columns.Add("colZ", "Z");
             dgvCoords.Columns.Add("colRemark", "备注");
+            dgvCoords.AllowUserToResizeRows = false;
             dgvCoords.RowTemplate.Height = 20;
             dgvCoords.ColumnHeadersHeight = 22;
             dgvCoords.Columns[0].FillWeight = 50;
@@ -1046,10 +1059,10 @@ namespace FridaGMTool
             dgvCoords.Columns[3].Visible = false;  // 隐藏 Z, 节省空间
             dgvCoords.Columns[4].FillWeight = 200;
             tabCoord.Controls.Add(dgvCoords);
-            int listRightX = 12 + 360 + 8;
-            int listBtnW = 110, listBtnH = 28;
-            // 实时坐标显示 (放选择文件按钮上方, 只显示 xyz 数值)
-            lblLiveCoord = new Label { Text = "X=--  Y=--  Z=--", Location = new Point(listRightX, yCoord[0]), Size = new Size(listBtnW, 20), ForeColor = Color.Blue, Tag = "mem" };
+            int listRightX = 6 + 360 + 8;
+            int listBtnW = 104, listBtnH = 26;
+            // 实时坐标显示 (放选择文件按钮上方, 只显示 xyz 数值, 保留1位小数, 无前缀)
+            lblLiveCoord = new Label { Text = "--  --  --", Location = new Point(listRightX, yCoord[0]), Size = new Size(listBtnW, 20), ForeColor = Color.Blue, Tag = "mem" };
             tabCoord.Controls.Add(lblLiveCoord);
             int dgvTopY = yCoord[0] + 24;
             yCoord[0] = dgvTopY + 330 + 8;
@@ -1059,77 +1072,48 @@ namespace FridaGMTool
             btnSelectCoordFile.Click += (s, ev) => SelectCoordFile();
             tabCoord.Controls.Add(btnSelectCoordFile);
 
-            int opGap = 6;
-            Button btnReadPos = new Button { Text = "读取当前", Location = new Point(listRightX, dgvTopY + (listBtnH + 4) * 2), Size = new Size(listBtnW, listBtnH), Tag = "mem" };
-            btnReadPos.Click += (s, ev) => ReadAndFillPosition();
-            tabCoord.Controls.Add(btnReadPos);
-
-            int inputY = yCoord[0];
-            int inputH = 22;
-            tabCoord.Controls.Add(new Label { Text = "备注:", Location = new Point(12, inputY + 3), Size = new Size(36, 20), Tag = "mem" });
-            txtCoordRemark = new TextBox { Location = new Point(52, inputY + 1), Size = new Size(120, inputH), Text = "示例", Tag = "mem" };
+            // 备注/文件名/保存到桌面 放到坐标列表右边 (选择文件下方)
+            int rightColX = listRightX;
+            int rightColW = listBtnW;
+            int rightY = dgvTopY + listBtnH + 8;
+            tabCoord.Controls.Add(new Label { Text = "备注:", Location = new Point(rightColX, rightY), Size = new Size(36, 20), Tag = "mem" });
+            txtCoordRemark = new TextBox { Location = new Point(rightColX + 36, rightY - 3), Size = new Size(rightColW - 36, 22), Text = "示例", Tag = "mem" };
             tabCoord.Controls.Add(txtCoordRemark);
+            rightY += 26;
 
-            tabCoord.Controls.Add(new Label { Text = "文件名:", Location = new Point(180, inputY + 3), Size = new Size(52, 20), Tag = "mem" });
-            txtCoordFileName = new TextBox { Location = new Point(236, inputY + 1), Size = new Size(140, inputH), Text = "示例", Tag = "mem" };
+            tabCoord.Controls.Add(new Label { Text = "文件:", Location = new Point(rightColX, rightY), Size = new Size(36, 20), Tag = "mem" });
+            txtCoordFileName = new TextBox { Location = new Point(rightColX + 36, rightY - 3), Size = new Size(rightColW - 36, 22), Text = "示例", Tag = "mem" };
             tabCoord.Controls.Add(txtCoordFileName);
+            rightY += 26;
 
-            Button btnSaveToDesktop = new Button { Text = "保存到桌面", Location = new Point(382, inputY - 1), Size = new Size(100, inputH + 4), Tag = "mem" };
+            Button btnSaveToDesktop = new Button { Text = "保存到桌面", Location = new Point(rightColX, rightY), Size = new Size(rightColW, 26), Tag = "mem" };
             btnSaveToDesktop.Click += (s, ev) => SaveCurrentCoordToDesktop();
             tabCoord.Controls.Add(btnSaveToDesktop);
+            rightY += 26 + 6;
 
-            inputY += inputH + 6;
-
-            // 左按钮: 传送到上一条坐标 (AAA 辅助风格)
-            Button btnTeleportPrev = new Button { Text = "← 传送上一条", Location = new Point(12, inputY), Size = new Size(100, btnH), Tag = "mem" };
-            btnTeleportPrev.Click += (s, ev) => TeleportAdjacent(-1);
-            tabCoord.Controls.Add(btnTeleportPrev);
-
-            Button btnTeleportSelected = new Button { Text = "传送到选中", Location = new Point(12 + 100 + opGap, inputY), Size = new Size(100, btnH), Tag = "mem" };
+            // "传送到选中"按钮放到保存到桌面下方
+            Button btnTeleportSelected = new Button { Text = "传送到选中", Location = new Point(rightColX, rightY), Size = new Size(rightColW, 26), Tag = "mem" };
             btnTeleportSelected.Click += (s, ev) => TeleportToSelectedCoord();
+            rightY += 26 + 8;
+            var nudgeToolTip = new ToolTip { InitialDelay = 100, ReshowDelay = 100, AutoPopDelay = 10000 };
+            chkFlyMode = new CheckBox { Text = "飞天遁地", Location = new Point(rightColX, rightY), Size = new Size(rightColW / 2 - 4, btnH), Tag = "mem" };
+            tabCoord.Controls.Add(chkFlyMode);
+            nudgeToolTip.SetToolTip(chkFlyMode, "方向键↑ 飞天\n方向键↓ 遁地");
+            chkNudgeMode = new CheckBox { Text = "瞬移", Location = new Point(rightColX + rightColW / 2 + 4, rightY), Size = new Size(rightColW / 2 - 4, btnH), Tag = "mem" };
+            tabCoord.Controls.Add(chkNudgeMode);
+            nudgeToolTip.SetToolTip(chkNudgeMode, "ALT＋方向键↑↓←→");
+            chkFlyMode.CheckedChanged += (s, ev) => { flyModeEnabled = chkFlyMode.Checked; UpdateNudgeHookState(); AppendLog("[微调] 飞天遁地: " + (flyModeEnabled ? "开" : "关")); };
+            chkNudgeMode.CheckedChanged += (s, ev) => { nudgeModeEnabled = chkNudgeMode.Checked; UpdateNudgeHookState(); AppendLog("[微调] 瞬移: " + (nudgeModeEnabled ? "开" : "关")); };
             tabCoord.Controls.Add(btnTeleportSelected);
 
-            // 右按钮: 传送到下一条坐标 (AAA 辅助风格)
-            Button btnTeleportNext = new Button { Text = "传送下一条 →", Location = new Point(12 + (100 + opGap) * 2, inputY), Size = new Size(100, btnH), Tag = "mem" };
-            btnTeleportNext.Click += (s, ev) => TeleportAdjacent(1);
-            tabCoord.Controls.Add(btnTeleportNext);
-
-            inputY += btnH + 4;
-            // 微调传送模式 (对齐 AAA.exe 的 Alt+方向键/空格/C 功能)
-            // 两个勾选框 + ? 提示图标, 勾选后通过全局键盘钩子触发微调传送
-            var nudgeToolTip = new ToolTip { InitialDelay = 100, ReshowDelay = 100, AutoPopDelay = 10000 };
-            CheckBox chkFlyMode = new CheckBox { Text = "飞天遁地", Location = new Point(12, inputY + 2), Size = new Size(80, btnH), Tag = "mem" };
-            tabCoord.Controls.Add(chkFlyMode);
-            Label lblFlyHelp = new Label { Text = "?", Location = new Point(12 + 80 + 2, inputY + 4), Size = new Size(14, 16), ForeColor = Color.Blue, Cursor = Cursors.Help, Tag = "mem" };
-            tabCoord.Controls.Add(lblFlyHelp);
-            nudgeToolTip.SetToolTip(lblFlyHelp, "勾选后:\n  方向键 ↑ = 向上瞬移 (Y+2)\n  方向键 ↓ = 向下瞬移 (Y-6)\n游戏中按方向键上下即可, 取消勾选关闭");
-
-            CheckBox chkNudgeMode = new CheckBox { Text = "瞬移", Location = new Point(180, inputY + 2), Size = new Size(60, btnH), Tag = "mem" };
-            tabCoord.Controls.Add(chkNudgeMode);
-            Label lblNudgeHelp = new Label { Text = "?", Location = new Point(180 + 60 + 2, inputY + 4), Size = new Size(14, 16), ForeColor = Color.Blue, Cursor = Cursors.Help, Tag = "mem" };
-            tabCoord.Controls.Add(lblNudgeHelp);
-            nudgeToolTip.SetToolTip(lblNudgeHelp, "勾选后按住 Alt + 方向键:\n  Alt+↑ = 向北 (Z-3)\n  Alt+↓ = 向南 (Z+3)\n  Alt+← = 向西 (X-3)\n  Alt+→ = 向东 (X+3)\n取消勾选关闭");
-
-            chkFlyMode.CheckedChanged += (s, ev) =>
-            {
-                flyModeEnabled = chkFlyMode.Checked;
-                UpdateNudgeHookState();
-                AppendLog("[微调] 飞天遁地模式: " + (flyModeEnabled ? "开启" : "关闭"));
-            };
-            chkNudgeMode.CheckedChanged += (s, ev) =>
-            {
-                nudgeModeEnabled = chkNudgeMode.Checked;
-                UpdateNudgeHookState();
-                AppendLog("[微调] 瞬移模式: " + (nudgeModeEnabled ? "开启" : "关闭"));
-            };
-
-            yCoord[0] = inputY + btnH + 8;
+            int inputY = yCoord[0];
+            // 飞天遁地/瞬移 checkbox 已移到右侧 (传送到选中按钮下方)
 
             txtCoordInput = new TextBox { Text = "" };
 
             grpGM.Controls.Add(tabGM);
             Controls.Add(grpGM);
-            ClientSize = new Size(552, grpGM.Bottom + 8);
+            ClientSize = new Size(grpGM.Right + 4, grpGM.Bottom + 8);
             UpdateCommPaths();
             EnsureBuffConfigFile();
             LoadConfig();
@@ -2271,8 +2255,8 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
             }
             string remark = txtCoordRemark.Text.Trim();
             int idx = dgvCoords.Rows.Count + 1;
-            dgvCoords.Rows.Add(idx, lastReadX.ToString("F1"), lastReadY.ToString("F1"), lastReadZ.ToString("F1"), remark);
-            AppendLog(string.Format("[坐标] 已添加: X={0:F1} Y={1:F1} Z={2:F1} {3}", lastReadX, lastReadY, lastReadZ, remark));
+            dgvCoords.Rows.Add(idx, lastReadX.ToString("F4"), lastReadY.ToString("F4"), lastReadZ.ToString("F4"), remark);
+            AppendLog(string.Format("[坐标] 已添加: X={0:F4} Y={1:F4} Z={2:F4} {3}", lastReadX, lastReadY, lastReadZ, remark));
         }
 
         void LoadCoordsFromFile(string path)
@@ -2351,7 +2335,7 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
                                 string key = trimmed.Substring(0, eq).Trim();
                                 if (!string.IsNullOrEmpty(key)) remark = key;
                             }
-                            dgvCoords.Rows.Add(idx++, cx.ToString("F1"), cy.ToString("F1"), cz.ToString("F1"), remark);
+                            dgvCoords.Rows.Add(idx++, cx.ToString("F4"), cy.ToString("F4"), cz.ToString("F4"), remark);
                         }
                     }
                 }
@@ -2380,7 +2364,7 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
             if (WriteMemCoord(tx, ty, tz))
             {
                 string remark = row.Cells[4].Value != null ? row.Cells[4].Value.ToString() : "";
-                AppendLog("传送成功 -> " + (string.IsNullOrEmpty(remark) ? "" : remark + " ") + string.Format("X={0:F1} Y={1:F1} Z={2:F1}", tx, ty, tz));
+                AppendLog("传送成功 -> " + (string.IsNullOrEmpty(remark) ? "" : remark + " ") + string.Format("X={0:F4} Y={1:F4} Z={2:F4}", tx, ty, tz));
             }
             else
             {
@@ -2406,7 +2390,9 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
             // 切换选中并传送
             dgvCoords.ClearSelection();
             dgvCoords.Rows[nextIdx].Selected = true;
-            dgvCoords.FirstDisplayedScrollingRowIndex = nextIdx;
+                    int halfVisible = dgvCoords.DisplayedRowCount(false) / 2;
+                    int scrollIdx = Math.Max(0, nextIdx - halfVisible);
+                    dgvCoords.FirstDisplayedScrollingRowIndex = scrollIdx;
             TeleportToSelectedCoord();
         }
 
@@ -2461,7 +2447,7 @@ __add('千斤顶', " + (enable ? "'已开启'" : "'已关闭'") + @")
                 AppendLog("警告: 读取到的坐标全为0，可能未进入游戏场景或偏移已过期");
             }
             lastReadX = px; lastReadY = py; lastReadZ = pz;
-            AppendLog("当前坐标: X=" + px.ToString("F1") + " Y(高)=" + py.ToString("F1") + " Z=" + pz.ToString("F1"));
+            AppendLog("当前坐标: X=" + px.ToString("F4") + " Y(高)=" + py.ToString("F4") + " Z=" + pz.ToString("F4"));
         }
 
         // Lua builder entry points.
@@ -4386,7 +4372,7 @@ end
                     double y = ReadDouble(hProcess, ptrChainObj + COORD_OFFSET_Y);
                     double z = ReadDouble(hProcess, ptrChainObj + COORD_OFFSET_Z);
                     AppendLog(string.Format("[坐标] 静态指针链初始化成功: OBJ=0x{0:X}", ptrChainObj));
-                    AppendLog(string.Format("[坐标] X={0:F1} Y(高)={1:F1} Z={2:F1}", x, y, z));
+                    AppendLog(string.Format("[坐标] X={0:F4} Y(高)={1:F4} Z={2:F4}", x, y, z));
                     AppendLog("[坐标] 使用静态指针链方案, 跳过Hook初始化(无需AOB扫描)");
                     AppendLog("[坐标] 游戏运行期间自动跟踪玩家坐标对象");
                     return;
@@ -4449,7 +4435,7 @@ end
                         double x = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_X);
                         double y = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Y);
                         double z = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Z);
-                        AppendLog(string.Format("  [slot {0}] rcx=0x{1:X} X={2:F1} Y(高)={3:F1} Z={4:F1}",
+                        AppendLog(string.Format("  [slot {0}] rcx=0x{1:X} X={2:F4} Y(高)={3:F4} Z={4:F4}",
                             i, capturedRcx, x, y, z));
                         if (bestSlot < 0) { bestSlot = i; bestDiff = 0; }
                     }
@@ -4467,7 +4453,7 @@ end
                     double y = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Y);
                     double z = ReadDouble(hProcess, capturedRcx + COORD_OFFSET_Z);
                     AppendLog(string.Format("[坐标] 初始化成功! 使用slot {0}, rcx=0x{1:X}", bestSlot, capturedRcx));
-                    AppendLog(string.Format("[坐标] X={0:F1} Y(高)={1:F1} Z={2:F1}", x, y, z));
+                    AppendLog(string.Format("[坐标] X={0:F4} Y(高)={1:F4} Z={2:F4}", x, y, z));
                     AppendLog("[坐标] 如坐标不对，可在'验证'中切换slot");
                     AppendLog("[坐标] Hook已安装，游戏运行期间自动跟踪玩家坐标对象");
                 }
@@ -4682,7 +4668,7 @@ end
                 double camX = ReadDouble(hProcess, curRcx + COORD_OFFSET_X);
                 double camY = ReadDouble(hProcess, curRcx + COORD_OFFSET_Y);
                 double camZ = ReadDouble(hProcess, curRcx + COORD_OFFSET_Z);
-                AppendLog(string.Format("[验证] 相机坐标: X={0:F1} Y={1:F1} Z={2:F1}", camX, camY, camZ));
+                AppendLog(string.Format("[验证] 相机坐标: X={0:F4} Y={1:F4} Z={2:F4}", camX, camY, camZ));
 
                 int foundPlayers = 0;
                 long bestPlayerPtr = 0;
@@ -4720,7 +4706,7 @@ end
                         catch {}
                         double diffF = Math.Abs(px - camX) + Math.Abs(py - camY) + Math.Abs(pz - camZ);
                         double diffD = Math.Abs(dx - camX) + Math.Abs(dy - camY) + Math.Abs(dz - camZ);
-                        AppendLog(string.Format("  [rcx+0x{0:X}] -> 0x{1:X} F:X={2:F1} Y={3:F1} Z={4:F1} (差={5:F0}) | D:X={6:F1} Y={7:F1} Z={8:F1} (差={9:F0})",
+                        AppendLog(string.Format("  [rcx+0x{0:X}] -> 0x{1:X} F:X={2:F4} Y={3:F4} Z={4:F4} (差={5:F0}) | D:X={6:F4} Y={7:F4} Z={8:F4} (差={9:F0})",
                             off, maybePtr, px, py, pz, diffF, dx, dy, dz, diffD));
                         foundPlayers++;
                         // 选差值最小的(优先Double,因为相机是Double)
@@ -4942,7 +4928,7 @@ end
             cachedObjBase = obj;
             cachedObjBasePid = persistentCoordPid;
             cachedObjBaseExpireAt = DateTime.Now.AddMilliseconds(500);
-            if (debug) AppendLog(string.Format("[坐标] 静态指针链成功: OBJ=0x{0:X} X={1:F1}", obj, x));
+            if (debug) AppendLog(string.Format("[坐标] 静态指针链成功: OBJ=0x{0:X} X={1:F4}", obj, x));
             return true;
         }
 
@@ -5096,7 +5082,7 @@ end
                     rawZ += CAM_OFFSET_Z;
                 }
                 x = rawX; y = rawY; z = rawZ;
-                if (debug) AppendLog(string.Format("[坐标] ptr2=0x{0:X} X={1:F1} Y(高)={2:F1} Z={3:F1}", ptr2, x, y, z));
+                if (debug) AppendLog(string.Format("[坐标] ptr2=0x{0:X} X={1:F4} Y(高)={2:F4} Z={3:F4}", ptr2, x, y, z));
                 return true;
             }
             catch (Exception ex) { AppendLog("读取坐标异常: " + ex.Message); return false; }
@@ -5106,25 +5092,17 @@ end
         // ===== 传送后按键模拟 (PostMessageW 方案, 对齐 AAA.exe) =====
         // 关键: AAA 用 PostMessageW 给游戏窗口发 WM_KEYDOWN/UP, 可后台无需前台焦点
         // 早期 banyi 用 SendInput 需游戏前台且仍被拉回, 改 PostMessageW 解决
-        string tpKeySequence = "20,51";  // VK_SPACE=0x20, VK_Q=0x51
-        int tpKeyDelayMs = 50;           // 按键间隔(毫秒)
+        string tpKeySequence = "20,20,51";  // VK_SPACE=0x20, VK_Q=0x51
+        int tpKeyDelayMs = 50;           // 单次按下/抬起间隔(毫秒)
+        int tpDoubleJumpDelayMs = 350;   // 两段跳之间、二跳到Q之间的等待
         IntPtr cachedGameHwnd = IntPtr.Zero;  // 游戏窗口句柄缓存
 
-        // 查找游戏窗口句柄 (yysls.exe 的可见顶层窗口)
+        // 查找游戏窗口句柄 (yysls.exe 的可见顶层窗口, 仅用于日志主窗口)
         IntPtr FindGameWindow()
         {
             if (cachedGameHwnd != IntPtr.Zero) return cachedGameHwnd;
             IntPtr found = IntPtr.Zero;
-            int targetPid = persistentCoordPid;
-            if (targetPid == 0)
-            {
-                try
-                {
-                    var procs = System.Diagnostics.Process.GetProcessesByName("yysls");
-                    if (procs.Length > 0) targetPid = procs[0].Id;
-                }
-                catch { }
-            }
+            int targetPid = GetTargetGamePid();
             if (targetPid == 0) return IntPtr.Zero;
             EnumWindows((hWnd, lp) =>
             {
@@ -5141,13 +5119,112 @@ end
             return found;
         }
 
-        // PostMessageW 发送单键 按下+抬起
-        void PostKeyPress(IntPtr hWnd, ushort vk)
+        int GetTargetGamePid()
         {
-            if (hWnd == IntPtr.Zero) return;
-            PostMessageW(hWnd, WM_KEYDOWN, (IntPtr)vk, IntPtr.Zero);
+            int targetPid = persistentCoordPid;
+            if (targetPid == 0)
+            {
+                try
+                {
+                    var procs = System.Diagnostics.Process.GetProcessesByName("yysls");
+                    if (procs.Length > 0) targetPid = procs[0].Id;
+                }
+                catch { }
+            }
+            return targetPid;
+        }
+
+        System.Collections.Generic.List<IntPtr> CollectGameKeyTargets()
+        {
+            var targets = new System.Collections.Generic.List<IntPtr>();
+            var seen = new System.Collections.Generic.HashSet<IntPtr>();
+            int targetPid = GetTargetGamePid();
+            if (targetPid == 0) return targets;
+
+            EnumWindows((hWnd, lp) =>
+            {
+                uint pid;
+                GetWindowThreadProcessId(hWnd, out pid);
+                if (pid == (uint)targetPid && IsWindowVisible(hWnd))
+                {
+                    if (seen.Add(hWnd)) targets.Add(hWnd);
+                    try
+                    {
+                        EnumChildWindows(hWnd, (child, childLp) =>
+                        {
+                            if (IsWindowVisible(child) && seen.Add(child)) targets.Add(child);
+                            return true;
+                        }, IntPtr.Zero);
+                    }
+                    catch { }
+                }
+                return true;
+            }, IntPtr.Zero);
+            return targets;
+        }
+
+        string DescribeWindow(IntPtr hWnd)
+        {
+            try
+            {
+                var titleSb = new System.Text.StringBuilder(128);
+                GetWindowTextW(hWnd, titleSb, 128);
+                var clsSb = new System.Text.StringBuilder(128);
+                GetClassName(hWnd, clsSb, 128);
+                return string.Format("hWnd=0x{0:X} 标题={1} 类名={2}", hWnd.ToInt64(), titleSb.ToString(), clsSb.ToString());
+            }
+            catch { return string.Format("hWnd=0x{0:X}", hWnd.ToInt64()); }
+        }
+
+        IntPtr MakeKeyLParam(ushort vk, bool keyUp)
+        {
+            uint scan = MapVirtualKey(vk, 0);
+            int lp = 1 | ((int)scan << 16);
+            if (keyUp) lp |= unchecked((int)0xC0000000);
+            return (IntPtr)lp;
+        }
+
+        bool PostKeyState(System.Collections.Generic.List<IntPtr> targets, ushort vk, bool keyUp)
+        {
+            if (targets == null || targets.Count == 0) return false;
+            uint myTid = GetCurrentThreadId();
+            var attachedTids = new System.Collections.Generic.List<uint>();
+            foreach (var tgt in targets)
+            {
+                uint _dummy;
+                uint targetTid = GetWindowThreadProcessId(tgt, out _dummy);
+                if (targetTid != 0 && targetTid != myTid && !attachedTids.Contains(targetTid))
+                {
+                    try { if (AttachThreadInput(myTid, targetTid, true)) attachedTids.Add(targetTid); } catch { }
+                }
+            }
+            try
+            {
+                bool ok = false;
+                uint msg = keyUp ? WM_KEYUP : WM_KEYDOWN;
+                IntPtr lp = MakeKeyLParam(vk, keyUp);
+                foreach (var tgt in targets)
+                {
+                    ok |= PostMessageW(tgt, msg, (IntPtr)vk, lp);
+                }
+                return ok;
+            }
+            finally
+            {
+                foreach (uint tid in attachedTids)
+                {
+                    try { AttachThreadInput(myTid, tid, false); } catch { }
+                }
+            }
+        }
+
+        // PostMessageW 发送单键 按下+抬起
+        bool PostKeyPress(System.Collections.Generic.List<IntPtr> targets, ushort vk)
+        {
+            bool ok = PostKeyState(targets, vk, false);
             System.Threading.Thread.Sleep(tpKeyDelayMs);
-            PostMessageW(hWnd, WM_KEYUP, (IntPtr)vk, (IntPtr)0xC0000000);
+            ok |= PostKeyState(targets, vk, true);
+            return ok;
         }
 
         // PostMessageW 发送 Alt+键 (用 WM_SYSKEYDOWN/UP, wParam 为 vk, lParam 含 Alt 标志)
@@ -5160,30 +5237,48 @@ end
             PostMessageW(hWnd, WM_SYSKEYUP, (IntPtr)vk, (IntPtr)0xE0000001);
         }
 
-        // 传送后触发按键序列 (冻结窗口内执行, PostMessageW 到游戏窗口)
-        void FireTeleportKeys()
+        // 传送前置按键: SPACE两段跳, 等到Q按下瞬间后交给坐标写入
+        bool FireTeleportPreKeys(out System.Collections.Generic.List<IntPtr> targets)
         {
-            if (string.IsNullOrEmpty(tpKeySequence)) return;
+            targets = null;
+            if (string.IsNullOrEmpty(tpKeySequence)) return true;
             IntPtr hWnd = FindGameWindow();
-            if (hWnd == IntPtr.Zero)
+            targets = CollectGameKeyTargets();
+            if (hWnd == IntPtr.Zero || targets.Count == 0)
             {
-                AppendLog("[传送] 未找到游戏窗口, 跳过按键模拟");
-                return;
+                try { BeginInvoke((Action)(() => AppendLog("[传送] 未找到游戏窗口, 跳过按键模拟"))); } catch { }
+                return false;
             }
             try
             {
-                string[] parts = tpKeySequence.Split(new char[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (string p in parts)
-                {
-                    ushort vk;
-                    if (ushort.TryParse(p.Trim(), System.Globalization.NumberStyles.HexNumber, null, out vk))
-                    {
-                        PostKeyPress(hWnd, vk);
-                    }
-                }
-                AppendLog(string.Format("[传送] PostMessageW 已发送序列: {0} hWnd=0x{1:X}", tpKeySequence, hWnd.ToInt64()));
+                int targetCount = targets.Count;
+                string mainWindowDesc = DescribeWindow(hWnd);
+                string lastTargetDesc = DescribeWindow(targets[targetCount - 1]);
+                try { BeginInvoke((Action)(() => AppendLog(string.Format("[传送] 游戏窗口 {0}", mainWindowDesc)))); } catch { }
+                try { BeginInvoke((Action)(() => AppendLog(string.Format("[传送] 按键目标窗口数={0}; {1}", targetCount, lastTargetDesc)))); } catch { }
+                bool ok = false;
+                ok |= PostKeyPress(targets, VK_SPACE);
+                System.Threading.Thread.Sleep(tpDoubleJumpDelayMs);
+                ok |= PostKeyPress(targets, VK_SPACE);
+                System.Threading.Thread.Sleep(tpDoubleJumpDelayMs);
+                ok |= PostKeyState(targets, VK_Q, false);
+                string okText = ok ? "OK" : "FAIL";
+                try { BeginInvoke((Action)(() => AppendLog(string.Format("[传送] PostMessageW 已发送序列: SPACE↓↑ -> SPACE↓↑ -> Q↓ -> 写坐标 ({0}, 目标={1})", okText, targetCount)))); } catch { }
+                return ok;
             }
-            catch (Exception ex) { AppendLog("[传送] 按键模拟失败: " + ex.Message); }
+            catch (Exception ex) { try { BeginInvoke((Action)(() => AppendLog("[传送] 按键模拟失败: " + ex.Message))); } catch { } return false; }
+        }
+
+        void FireTeleportQUp(System.Collections.Generic.List<IntPtr> targets)
+        {
+            if (targets == null || targets.Count == 0) return;
+            try
+            {
+                System.Threading.Thread.Sleep(tpKeyDelayMs);
+                bool ok = PostKeyState(targets, VK_Q, true);
+                try { BeginInvoke((Action)(() => AppendLog(string.Format("[传送] Q↑ 已发送 ({0})", ok ? "OK" : "FAIL")))); } catch { }
+            }
+            catch (Exception ex) { try { BeginInvoke((Action)(() => AppendLog("[传送] Q抬起失败: " + ex.Message))); } catch { } }
         }
 
         // ===== 微调传送 (对齐 AAA.exe 的 Alt+方向键/空格/C 行为) =====
@@ -5191,113 +5286,144 @@ end
         // 偏移方向: +X=东, -X=西, +Z=南, -Z=北, +Y=上, -Y=下
         // 步长参考 AAA 实测: 水平 3.0 米, 垂直上 2.0 米, 垂直下 6.0 米
         const double NUDGE_HORIZONTAL = 3.0;
-        const double NUDGE_UP = 2.0;
-        const double NUDGE_DOWN = 6.0;
+        const double NUDGE_UP = 6.0;       // 飞天遁地 上升步长
+        const double NUDGE_DOWN = 3.0;     // 飞天遁地 下降步长
 
         // 微调传送: 读取当前坐标 + 偏移 + 单次写入 (不冻结不按键)
+        // lock 保护防止并发 RPM/WPM 调用导致句柄状态错乱 (后台线程调用)
+        readonly object nudgeLock = new object();
         void NudgeTeleport(double dx, double dy, double dz)
         {
-            if (!chkEnableMemory.Checked)
+            lock (nudgeLock)
             {
-                AppendLog("微调失败: 请先勾选'启用内存功能'");
-                return;
-            }
-            double x, y, z;
-            if (!ReadMemCoord(out x, out y, out z))
-            {
-                AppendLog("微调失败: 无法读取当前坐标 (请先初始化坐标)");
-                return;
-            }
-            double nx = x + dx, ny = y + dy, nz = z + dz;
-            if (WriteMemCoord(nx, ny, nz, false))
-            {
-                AppendLog(string.Format("[微调] ({0:F1},{1:F1},{2:F1}) -> ({3:F1},{4:F1},{5:F1})  dx={6} dy={7} dz={8}",
-                    x, y, z, nx, ny, nz, dx, dy, dz));
-            }
-            else
-            {
-                AppendLog("[微调] 写入失败");
+                if (!memoryEnabledCache)
+                {
+                    try { BeginInvoke((Action)(() => AppendLog("微调失败: 请先勾选'启用内存功能'"))); } catch { }
+                    return;
+                }
+                double x, y, z;
+                if (!ReadMemCoord(out x, out y, out z))
+                {
+                    try { BeginInvoke((Action)(() => AppendLog("微调失败: 无法读取当前坐标 (请先初始化坐标)"))); } catch { }
+                    return;
+                }
+                double nx = x + dx, ny = y + dy, nz = z + dz;
+                bool ok = WriteMemCoord(nx, ny, nz, false);
+                string logMsg = ok
+                    ? string.Format("[微调] ({0:F4},{1:F4},{2:F4}) -> ({3:F4},{4:F4},{5:F4})  dx={6} dy={7} dz={8}", x, y, z, nx, ny, nz, dx, dy, dz)
+                    : "[微调] 写入失败";
+                try { BeginInvoke((Action)(() => AppendLog(logMsg))); } catch { }
             }
         }
 
-        // 更新键盘钩子状态: 任一模式开启则安装钩子, 都关闭则卸载
+        // 更新键盘钩子状态: 启用内存功能或任一模式开启则安装钩子, 都关闭则卸载
         void UpdateNudgeHookState()
         {
-            bool needHook = flyModeEnabled || nudgeModeEnabled;
+            bool needHook = memoryEnabledCache || flyModeEnabled || nudgeModeEnabled;
             if (needHook && nudgeKbHook == IntPtr.Zero)
             {
-                using (System.Diagnostics.Process curProc = System.Diagnostics.Process.GetCurrentProcess())
-                using (System.Diagnostics.ProcessModule mod = curProc.MainModule)
-                {
-                    nudgeKbHook = SetWindowsHookEx(WH_KEYBOARD_LL, NudgeKbProc, GetModuleHandle(mod.ModuleName), 0);
-                }
+                // WH_KEYBOARD_LL 是低级钩子, 不注入其他进程, hMod 必须为 IntPtr.Zero
+                // 不能用 GetModuleHandle(mod.ModuleName): mod.ModuleName 是完整路径, GetModuleHandle 只接受模块名, 会返回 NULL 导致钩子安装失败
+                nudgeKbProcDelegate = NudgeKbProc;
+                nudgeKbHook = SetWindowsHookEx(WH_KEYBOARD_LL, nudgeKbProcDelegate, IntPtr.Zero, 0);
                 if (nudgeKbHook == IntPtr.Zero)
                 {
                     AppendLog("[微调] 键盘钩子安装失败: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+                }
+                else
+                {
+                    AppendLog("[微调] 键盘钩子安装成功");
                 }
             }
             else if (!needHook && nudgeKbHook != IntPtr.Zero)
             {
                 UnhookWindowsHookEx(nudgeKbHook);
                 nudgeKbHook = IntPtr.Zero;
+                AppendLog("[微调] 键盘钩子已卸载");
                 // 重置按键去抖动状态, 避免下次开启时被卡住
                 flyKeyUp = flyKeyDown = true;
                 nudgeKeyLeft = nudgeKeyRight = nudgeKeyUp = nudgeKeyDown = true;
+                hotkeyF11Up = hotkeyLeftUp = hotkeyRightUp = true;
             }
         }
 
-        // 低级键盘钩子回调: 在 UI 线程外执行, 不可直接操作控件, 仅触发微调传送
+        // 低级键盘钩子回调: 在系统线程执行, 必须快速返回否则会被系统强制断开 (LowLevelHooksTimeout 默认 300ms)
+        // 用 Task.Run 在线程池执行 NudgeTeleport, 钩子立即返回, 避免 UI 线程阻塞导致钩子超时闪退
+        // pendingNudge 防止按键连发积压 (一次未完成则跳过下一次)
+        int pendingNudge = 0;
+        void TryNudge(double dx, double dy, double dz)
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref pendingNudge, 1, 0) != 0) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try { NudgeTeleport(dx, dy, dz); }
+                catch (Exception ex) { try { BeginInvoke((Action)(() => AppendLog("[微调] 异常: " + ex.Message))); } catch { } }
+                finally { System.Threading.Interlocked.Exchange(ref pendingNudge, 0); }
+            });
+        }
+
+        // 方向微调: 基于人物朝向计算世界坐标偏移 (forward=前, right=右, up=上)
+        const long YAW_OFFSET = 0x358;
+        void TryNudgeDirectional(double forward, double right, double up)
+        {
+            if (System.Threading.Interlocked.CompareExchange(ref pendingNudge, 1, 0) != 0) return;
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    double yaw = 0; bool yawRead = false;
+                    IntPtr hProcess = AcquireCoordHandle();
+                    if (hProcess != IntPtr.Zero)
+                    {
+                        long ptr2;
+                        if (ResolveCoordBase(hProcess, out ptr2, false))
+                        { yaw = ReadDouble(hProcess, ptr2 + YAW_OFFSET); yawRead = true; }
+                    }
+                    if (!yawRead)
+                    {
+                        try { BeginInvoke((Action)(() => AppendLog("[微调] 无法读取朝向"))); } catch { }
+                        NudgeTeleport(forward, right, up); return;
+                    }
+                    double cosY = Math.Cos(yaw), sinY = Math.Sin(yaw);
+                    double dx = forward * cosY - right * sinY;
+                    double dy = forward * sinY + right * cosY;
+                    double dz = up;
+                    try { BeginInvoke((Action)(() => AppendLog(string.Format("[微调] yaw={0:F4} forward={1:F1} right={2:F1} -> dx={3:F4} dy={4:F4} dz={5:F4}", yaw, forward, right, dx, dy, dz)))); } catch { }
+                    NudgeTeleport(dx, dy, dz);
+                }
+                catch (Exception ex) { try { BeginInvoke((Action)(() => AppendLog("[微调] 异常: " + ex.Message))); } catch { } }
+                finally { System.Threading.Interlocked.Exchange(ref pendingNudge, 0); }
+            });
+        }
+
         IntPtr NudgeKbProc(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (nCode >= 0)
+            try
             {
-                int vk = System.Runtime.InteropServices.Marshal.ReadInt32(lParam);
-                uint msg = (uint)wParam.ToInt64();
-                bool isDown = (msg == WM_KEYDOWN_LL || msg == WM_SYSKEYDOWN_LL);
-                bool isUp = (msg == WM_KEYUP_LL || msg == WM_SYSKEYUP_LL);
-
-                if (flyModeEnabled && (vk == VK_UP || vk == VK_DOWN))
+                if (nCode >= 0)
                 {
-                    // 飞天遁地用无 Alt 的方向键 (WM_KEYDOWN), 与瞬移模式的 Alt+方向键 (WM_SYSKEYDOWN) 互不干扰
-                    if (vk == VK_UP && isDown && flyKeyUp)
-                    {
-                        flyKeyUp = false;
-                        BeginInvoke((Action)(() => NudgeTeleport(0, NUDGE_UP, 0)));
-                    }
-                    else if (vk == VK_DOWN && isDown && flyKeyDown)
-                    {
-                        flyKeyDown = false;
-                        BeginInvoke((Action)(() => NudgeTeleport(0, -NUDGE_DOWN, 0)));
-                    }
-                    else if (vk == VK_UP && isUp) flyKeyUp = true;
-                    else if (vk == VK_DOWN && isUp) flyKeyDown = true;
-                }
+                    int vk = System.Runtime.InteropServices.Marshal.ReadInt32(lParam);
+                    uint msg = (uint)wParam.ToInt64();
+                    bool isDown = (msg == WM_KEYDOWN_LL || msg == WM_SYSKEYDOWN_LL);
+                    bool isUp = (msg == WM_KEYUP_LL || msg == WM_SYSKEYUP_LL);
+                    bool isSysKey = (msg == WM_SYSKEYDOWN_LL || msg == WM_SYSKEYUP_LL);  // Alt 组合键
 
-                if (nudgeModeEnabled)
-                {
-                    // Alt+方向键 (WM_SYSKEYDOWN/UP), 拦截方向键避免游戏同时响应
-                    if (msg == WM_SYSKEYDOWN_LL || msg == WM_SYSKEYUP_LL)
+                    // 飞天遁地: 只响应普通方向键(非Alt组合), 避免和瞬移模式冲突
+                    if (flyModeEnabled && !isSysKey && (vk == VK_UP || vk == VK_DOWN))
                     {
-                        if (vk == VK_UP && isDown && nudgeKeyUp)
-                        {
-                            nudgeKeyUp = false;
-                            BeginInvoke((Action)(() => NudgeTeleport(0, 0, -NUDGE_HORIZONTAL)));
-                        }
-                        else if (vk == VK_DOWN && isDown && nudgeKeyDown)
-                        {
-                            nudgeKeyDown = false;
-                            BeginInvoke((Action)(() => NudgeTeleport(0, 0, NUDGE_HORIZONTAL)));
-                        }
-                        else if (vk == VK_LEFT && isDown && nudgeKeyLeft)
-                        {
-                            nudgeKeyLeft = false;
-                            BeginInvoke((Action)(() => NudgeTeleport(-NUDGE_HORIZONTAL, 0, 0)));
-                        }
-                        else if (vk == VK_RIGHT && isDown && nudgeKeyRight)
-                        {
-                            nudgeKeyRight = false;
-                            BeginInvoke((Action)(() => NudgeTeleport(NUDGE_HORIZONTAL, 0, 0)));
-                        }
+                        if (vk == VK_UP && isDown && flyKeyUp) { flyKeyUp = false; TryNudge(0, 0, NUDGE_UP); }
+                        else if (vk == VK_DOWN && isDown && flyKeyDown) { flyKeyDown = false; TryNudge(0, 0, -NUDGE_DOWN); }
+                        else if (vk == VK_UP && isUp) flyKeyUp = true;
+                        else if (vk == VK_DOWN && isUp) flyKeyDown = true;
+                    }
+
+                    // 瞬移: 只响应 Alt+方向键 (WM_SYSKEYDOWN/UP)
+                    if (nudgeModeEnabled && isSysKey)
+                    {
+                        if (vk == VK_UP && isDown && nudgeKeyUp) { nudgeKeyUp = false; TryNudgeDirectional(NUDGE_HORIZONTAL, 0, 0); }
+                        else if (vk == VK_DOWN && isDown && nudgeKeyDown) { nudgeKeyDown = false; TryNudgeDirectional(-NUDGE_HORIZONTAL, 0, 0); }
+                        else if (vk == VK_LEFT && isDown && nudgeKeyLeft) { nudgeKeyLeft = false; TryNudgeDirectional(0, -NUDGE_HORIZONTAL, 0); }
+                        else if (vk == VK_RIGHT && isDown && nudgeKeyRight) { nudgeKeyRight = false; TryNudgeDirectional(0, NUDGE_HORIZONTAL, 0); }
                         else if (isUp)
                         {
                             if (vk == VK_UP) nudgeKeyUp = true;
@@ -5306,93 +5432,143 @@ end
                             else if (vk == VK_RIGHT) nudgeKeyRight = true;
                         }
                     }
+
+                    // 坐标列表全局热键: 启用内存且坐标列表非空时生效
+                    // F11=传送选中坐标; ←=传送上一条; →=传送下一条 (均为普通按键, 非Alt组合)
+                    if (memoryEnabledCache && !isSysKey)
+                    {
+                        if (vk == VK_F11 && isDown && hotkeyF11Up)
+                        {
+                            hotkeyF11Up = false;
+                            try { BeginInvoke((Action)(() => TeleportToSelectedCoord())); } catch { }
+                        }
+                        else if (vk == VK_LEFT && isDown && hotkeyLeftUp)
+                        {
+                            hotkeyLeftUp = false;
+                            try { BeginInvoke((Action)(() => TeleportAdjacent(-1))); } catch { }
+                        }
+                        else if (vk == VK_RIGHT && isDown && hotkeyRightUp)
+                        {
+                            hotkeyRightUp = false;
+                            try { BeginInvoke((Action)(() => TeleportAdjacent(1))); } catch { }
+                        }
+                        else if (isUp)
+                        {
+                            if (vk == VK_F11) hotkeyF11Up = true;
+                            else if (vk == VK_LEFT) hotkeyLeftUp = true;
+                            else if (vk == VK_RIGHT) hotkeyRightUp = true;
+                        }
+                    }
                 }
             }
+            catch { }
             return CallNextHookEx(nudgeKbHook, nCode, wParam, lParam);
         }
 
-        // 通过hook捕获的寄存器值写入坐标 + 冻结
-        // freezeAndKeys=false 时仅写入一次, 不启动冻结定时器也不发按键 (用于微调传送, 对齐 AAA.exe 行为)
+        // 浼犻€? 瀵归綈 AAA.exe 閫嗗悜鏃跺簭 (SPACE+Q 鎸夐敭 -> 鍐欏叆3娆″潗鏍囧唴瀛?
+        // freezeAndKeys=false 鏃朵粎鍐欏叆涓€娆? 涓嶅彂鎸夐敭涓嶅喕缁?(鐢ㄤ簬寰皟浼犻€?
+        // freezeAndKeys=true 鏃跺湪鍚庡彴绾跨▼鎵ц: 鍏堝彂SPACE+Q -> 鍐嶅啓鍐呭瓨 -> 鐭殏鍐荤粨闃插洖婊?
         bool WriteMemCoord(double x, double y, double z, bool freezeAndKeys = true)
         {
-            if (!chkEnableMemory.Checked)
+            if (!memoryEnabledCache)
             {
-                AppendLog("传送失败: 请先勾选'启用内存功能'");
+                AppendLog("浼犻€佸け璐? 璇峰厛鍕鹃€?鍚敤鍐呭瓨鍔熻兘'");
                 return false;
             }
-            IntPtr hProcess = AcquireCoordHandle();  // 优化项1: 长驻句柄复用
-            if (hProcess == IntPtr.Zero) return false;
+
+            // 寰皟浼犻€? 鐩存帴鍐欏唴瀛? 涓嶅彂鎸夐敭涓嶅喕缁?(璋冪敤鏂瑰凡鍦ㄥ悗鍙扮嚎绋?
+            if (!freezeAndKeys)
+            {
+                return WriteMemCoordCore(x, y, z, false);
+            }
+
+            // 鏅€氫紶閫? 鍚庡彴绾跨▼鎵ц, 閬垮厤闃诲UI瀵艰嚧閿洏閽╁瓙瓒呮椂(LowLevelHooksTimeout 300ms)
+            // AAA 閫嗗悜璇佸疄: 鍏?PostMessageW 鍙?SPACE down/up -> Q down/up -> 鍐嶅啓鍏?X/Z/Y
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    // 1. 先双跳, Q按下瞬间写坐标, 写完再抬Q
+                    System.Collections.Generic.List<IntPtr> keyTargets;
+                    if (!FireTeleportPreKeys(out keyTargets))
+                    {
+                        try { BeginInvoke((Action)(() => AppendLog("[传送] 按键未发送成功, 已取消坐标写入"))); } catch { }
+                        return;
+                    }
+                    try
+                    {
+                        // 2. Q按住期间写入3次坐标内存
+                        WriteMemCoordCore(x, y, z, true);
+                    }
+                    finally
+                    {
+                        FireTeleportQUp(keyTargets);
+                    }
+                }
+                catch (Exception ex) { try { BeginInvoke((Action)(() => AppendLog("浼犻€佸紓甯? " + ex.Message))); } catch { } }
+            });
+            return true;
+        }
+
+        // 瀹為檯鍐欏叆鍧愭爣鍐呭瓨 (绾跨▼瀹夊叏, 鍙湪鍚庡彴绾跨▼璋冪敤)
+        // freeze=true 鏃跺啓鍏ュ悗鐭殏寰幆鍐荤粨绾?.3绉? 闃叉娓告垙寮曟搸鍥炴粴
+        bool WriteMemCoordCore(double x, double y, double z, bool freeze)
+        {
+            IntPtr hProcess = AcquireCoordHandle();
+            if (hProcess == IntPtr.Zero)
+            {
+                try { BeginInvoke((Action)(() => AppendLog("浼犻€佸け璐? 鏃犳硶鎵撳紑杩涚▼"))); } catch { }
+                return false;
+            }
             try
             {
                 long ptr2;
                 if (!ResolveCoordBase(hProcess, out ptr2, true))
                 {
-                    AppendLog("传送失败: 无法解析坐标基址");
+                    try { BeginInvoke((Action)(() => AppendLog("浼犻€佸け璐? 鏃犳硶瑙ｆ瀽鍧愭爣鍩哄潃"))); } catch { }
                     return false;
                 }
 
-                // 静态指针链方案: 直接写玩家对象, 全Double, 无需相机校正
-                // Hook后备方案: slot 10+ 写Float, 其他写Double(相机坐标=玩家目标-偏移)
+                string coordType = lastResolveWasPtrChain ? "鐜╁鍧愭爣" : (coordHookActiveSlot >= 10 ? "Float鍧愭爣" : "鐩告満鍧愭爣");
+                int writeCount = freeze ? 3 : 1;
                 bool ok = true;
-                if (lastResolveWasPtrChain)
+                for (int i = 0; i < writeCount; i++)
                 {
-                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_X, x);
-                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Y, y);
-                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Z, z);
-                    AppendLog(string.Format("[传送] 写入玩家坐标: X={0:F1} Y(高)={1:F1} Z={2:F1}", x, y, z));
+                    bool onceOk = WriteCoordOnce(hProcess, ptr2, x, y, z);
+                    ok &= onceOk;
+                    int writeIndex = i + 1;
+                    bool loggedOnceOk = onceOk;
+                    try { BeginInvoke((Action)(() => AppendLog(string.Format("[浼犻€乚 鍐欏叆{0} #{1}/{2}: X={3:F4} Y(楂?={4:F4} Z={5:F4} {6}", coordType, writeIndex, writeCount, x, y, z, loggedOnceOk ? "OK" : "FAIL")))); } catch { }
+                    if (i + 1 < writeCount) System.Threading.Thread.Sleep(30);
                 }
-                else if (coordHookActiveSlot >= 10)
-                {
-                    ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_X, (float)x);
-                    ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_Y, (float)y);
-                    ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_Z, (float)z);
-                }
-                else
-                {
-                    // 写入相机坐标 = 玩家目标坐标 - 偏移
-                    double camX = x - CAM_OFFSET_X;
-                    double camY = y - CAM_OFFSET_Y;
-                    double camZ = z - CAM_OFFSET_Z;
-                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_X, camX);
-                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Y, camY);
-                    ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Z, camZ);
-                    AppendLog(string.Format("[传送] 写入相机坐标: X={0:F1} Y={1:F1} Z={2:F1}", camX, camY, camZ));
-                }
-
-                if (!freezeAndKeys)
-                {
-                    // 微调传送: 单次写入即可, 不冻结不按键
-                    return ok;
-                }
-
-                // 关闭上一次冻结 (优化项1: 句柄长驻, 仅停止定时器, 不 CloseHandle)
-                if (coordFreezeTimer != null && coordFreezeTimer.Enabled)
-                {
-                    coordFreezeTimer.Stop();
-                }
-
-                // 启动冻结：短时间反复写入防止引擎覆盖
-                // 注意: lockCoordHProcess 复用长驻句柄, CoordFreezeTick 不应 CloseHandle 它
-                lockCoordX = x; lockCoordY = y; lockCoordZ = z;
-                lockCoordBase = ptr2;
-                lockCoordHProcess = hProcess;
-                lockCoordSlot = coordHookActiveSlot;
-                lockCoordIsPtrChain = lastResolveWasPtrChain;
-                coordFreezeCount = 0;
-                if (coordFreezeTimer == null)
-                {
-                    coordFreezeTimer = new System.Windows.Forms.Timer();
-                    coordFreezeTimer.Interval = 16;
-                    coordFreezeTimer.Tick += CoordFreezeTick;
-                }
-                coordFreezeTimer.Start();
-                // 传送后触发按键序列(空格+Q), 绕过游戏位移回滚机制
-                // 在冻结窗口(约1秒)内发送, 此时坐标正被反复写入锁定
-                FireTeleportKeys();
                 return ok;
             }
-            catch (Exception ex) { AppendLog("传送异常: " + ex.Message); return false; }
-            // 优化项1: 不在此 CloseHandle, 长驻句柄由 AcquireCoordHandle/OnFormClosing 管理生命周期
+            catch (Exception ex) { try { BeginInvoke((Action)(() => AppendLog("浼犻€佸紓甯? " + ex.Message))); } catch { } return false; }
+        }
+
+        // 写入一次坐标 (三种方案: 指针链Double / Hook Float / 相机校正Double)
+        bool WriteCoordOnce(IntPtr hProcess, long ptr2, double x, double y, double z)
+        {
+            bool ok = true;
+            if (lastResolveWasPtrChain)
+            {
+                ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_X, x);
+                ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Y, y);
+                ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Z, z);
+            }
+            else if (coordHookActiveSlot >= 10)
+            {
+                ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_X, (float)x);
+                ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_Y, (float)y);
+                ok &= WriteFloat(hProcess, ptr2 + COORD_OFFSET_Z, (float)z);
+            }
+            else
+            {
+                ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_X, x - CAM_OFFSET_X);
+                ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Y, y - CAM_OFFSET_Y);
+                ok &= WriteDouble(hProcess, ptr2 + COORD_OFFSET_Z, z - CAM_OFFSET_Z);
+            }
+            return ok;
         }
 
         double lockCoordX, lockCoordY, lockCoordZ;
@@ -5639,6 +5815,15 @@ end
 
         void chkEnableMemory_CheckedChanged(object sender, EventArgs e)
         {
+            memoryEnabledCache = chkEnableMemory.Checked;
+            if (!memoryEnabledCache)
+            {
+                // 禁用内存功能时, 自动关闭微调模式并卸载键盘钩子, 防止钩子残留和无效按键拦截
+                if (chkFlyMode != null && chkFlyMode.Checked) chkFlyMode.Checked = false;
+                if (chkNudgeMode != null && chkNudgeMode.Checked) chkNudgeMode.Checked = false;
+            }
+            // 启用/禁用内存功能时都要更新钩子状态 (F11/←/→ 热键需要钩子)
+            UpdateNudgeHookState();
             // 刷新所有内存控件状态
             SetGMEnabled(isReady);
         }
@@ -5779,13 +5964,17 @@ end
             liveCoordTimer.Interval = 500;
             liveCoordTimer.Tick += (s, e2) =>
             {
-                if (!chkEnableMemory.Checked) return;
-                double x, y, z;
-                if (ReadMemCoord(out x, out y, out z))
+                if (!memoryEnabledCache) return;
+                // 后台线程读坐标, 避免 RPM 阻塞 UI 消息泵导致 WH_KEYBOARD_LL 钩子超时被系统断开
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    lblLiveCoord.Text = string.Format("X={0:F1}  Y={1:F1}  Z={2:F1}", x, y, z);
-                    lastReadX = x; lastReadY = y; lastReadZ = z;
-                }
+                    double x, y, z;
+                    if (ReadMemCoord(out x, out y, out z))
+                    {
+                        lastReadX = x; lastReadY = y; lastReadZ = z;
+                        try { BeginInvoke((Action)(() => { lblLiveCoord.Text = string.Format("{0:F1}  {1:F1}  {2:F1}", x, y, z); })); } catch { }
+                    }
+                });
             };
             liveCoordTimer.Start();
         }
